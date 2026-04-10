@@ -5,6 +5,25 @@ The mzprov architecture has two complementary parts: a long-term
 **deployment strategy** that ships value incrementally without waiting
 for any single anchor to be adopted.
 
+## Actors used in this document
+
+The chain-of-custody diagram and the deployment-tracks table below
+refer to actors by single-letter shortcodes. The full definitions live
+in [`03-threat-model.md`](03-threat-model.md#actors); the short
+version, just for the symbols this file uses:
+
+| Symbol | Actor |
+|---|---|
+| **V** | Vendor / Instrument — produces RAW data; potential root of trust |
+| **D** | Developer / Converter — transforms RAW → mzML; responsible for lineage |
+| **R** | Repository — hosts datasets (PRIDE, MassIVE, jPOSTrepo); potential secondary trust anchor |
+| **U** | User / Analyst — consumes data; needs to assess trustworthiness |
+| **S** | Simulator — generates synthetic datasets indistinguishable from real acquisitions |
+
+The **M** actor (malicious actor) does not appear in this file; the
+threat model that uses it is in
+[`03-threat-model.md`](03-threat-model.md).
+
 ---
 
 ## The cryptographic chain of custody

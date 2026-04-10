@@ -41,6 +41,18 @@ mzprov v0 aims to provide:
 
 ## Threat model recap
 
+The table below refers to actors by single-letter shortcodes. The
+full actor list with their roles in the long-term architecture lives
+in [`../docs/03-threat-model.md`](../docs/03-threat-model.md#actors).
+For the symbols this section uses:
+
+| Symbol | Actor |
+|---|---|
+| **U** | User / Analyst — consumes data; runs the verifier |
+| **S** | Simulator — produces synthetic datasets that resemble real acquisitions |
+| **M** | Malicious actor — modifies, fabricates, or misrepresents data |
+| **V** | Vendor / Instrument — produces RAW data (referenced for context but not exercised by v0) |
+
 | Actor | Capability | Defense |
 |---|---|---|
 | **U** (verifier) | Reads any sidecar a third party sends | Verifies integrity locally; needs separate out-of-band knowledge to grant trust |
