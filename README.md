@@ -87,7 +87,7 @@ specified in [`spec/trust-model.md`](spec/trust-model.md) §1 and §5.
 guarantees provenance (these bytes were signed by this key at this time),
 not correctness (the experiment was well designed and executed). See
 [`spec/security-considerations.md`](spec/security-considerations.md) for
-the full list of properties not provided.
+a list of additional properties not provided.
 
 In particular, in v0:
 
