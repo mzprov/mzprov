@@ -39,12 +39,47 @@ when there is at least one implementation, test vectors, and approval — see
 | mzML canonicalization (spectrum content, all binary arrays) | v0 frozen |
 | Trust model (`--expected-key-id`, `--require-trusted`, `--public-key`) | v0 frozen |
 | Verifier exit codes (`0`–`7`) | v0 frozen |
-| Python reference implementation | shipping (lifted from `imspy_simulation.provenance`, 168 tests passing) |
+| Python reference implementation | shipping (lifted from `imspy_simulation.provenance`, 170 tests passing) |
 | C# implementation | in development |
 | Cross-implementation conformance test vectors | v0 ships 16 vectors (2 valid, 11 invalid, 3 canonicalization fixtures) |
 | Vendor RAW canonicalization | out of scope for v0 |
 | Repository countersignature | out of scope for v0 |
 | Hardware-backed key protection | out of scope for v0 |
+
+## Two layers: integrity and identity
+
+`mzprov` is a **two-layer system**. The layers are evaluated separately
+and answer different questions:
+
+- **Integrity** — *Do the bytes match what was signed?* Always
+  evaluated. The canonical content hash plus the Ed25519 signature
+  over the payload tell the verifier whether anything has been
+  modified since signing. Spec:
+  [`spec/canonicalization-d-v0.md`](spec/canonicalization-d-v0.md),
+  [`spec/canonicalization-mzml-v0.md`](spec/canonicalization-mzml-v0.md),
+  [`spec/signature-scheme.md`](spec/signature-scheme.md).
+- **Identity** — *Who signed those bytes?* Opt-in via trust flags.
+  The stable key id derived from the embedded verifying key, the
+  local trusted-keys registry, and three trust pinning options
+  (`--expected-key-id`, `--require-trusted`, `--public-key`) tell
+  the verifier whether the signer is who you expected. Spec:
+  [`spec/key-id-derivation.md`](spec/key-id-derivation.md),
+  [`spec/trust-model.md`](spec/trust-model.md).
+
+A passing integrity check means *"these bytes have not been modified
+since they were signed by the key embedded in the sidecar"*. It does
+NOT mean *"the signer is trustworthy to me"* — that is the identity
+layer's job. Without a trust flag, `mzprov verify` reports integrity
+only and the trust-check status is `not_requested`. With one or more
+trust flags, both layers must pass for the verifier to exit `0`.
+
+This separation is the same one [Sigstore](https://www.sigstore.dev/),
+[in-toto](https://in-toto.io/), and [SLSA](https://slsa.dev/) use,
+and it is what lets the trust layer evolve independently of the
+cryptographic primitive. The verifier's check order and the
+label-vs-signer consistency defense (which prevents an attacker from
+relabeling `payload.key_id` to claim a different identity) are
+specified in [`spec/trust-model.md`](spec/trust-model.md) §1 and §5.
 
 ## What this repository does NOT claim
 
@@ -61,6 +96,14 @@ In particular, in v0:
   specific software key. This is intentional — see [`docs/01-problem.md`](docs/01-problem.md).
 - There is no vendor PKI, no repository countersignature, no transparency log,
   no revocation, and no hardware-rooted key. Those are future work.
+- There is **no encryption**. `mzprov` is an attestation scheme: every
+  sidecar and every signed byte is plaintext, and confidentiality is
+  not a goal. This is the same property [in-toto](https://in-toto.io/),
+  [SLSA](https://slsa.dev/), [Sigstore](https://www.sigstore.dev/),
+  and every other attestation system has. If you need confidentiality,
+  use a transport-layer encryption mechanism (HTTPS, age, GPG, …) on
+  top of the signed bytes — `mzprov` and that mechanism are
+  orthogonal.
 
 ## Quick start
 

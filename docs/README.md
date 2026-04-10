@@ -19,6 +19,7 @@ by the [`spec/`](../spec/) documents and the
 | [`05-roadmap.md`](05-roadmap.md) | The five-phase plan from simulator self-signing to instrument attestation, plus the technical / operational / social / security risks |
 | [`06-related-work.md`](06-related-work.md) | mzML `dataProcessing`, PROV-O, SLSA, in-toto, Sigstore, Rekor, ProteomeXchange — what mzprov builds on and what it does not reinvent |
 | [`faq.md`](faq.md) | The mzML SHA-1 misread; full hash vs sampling; why not blockchain; why not a shared Rust core; test-only key rationale; sidecar pretty-printing; the legacy `timsim/` prefix |
+| [`benchmarks.md`](benchmarks.md) | Canonicalization throughput on real Bruker `.d`, real Bruker / Thermo mzML, and GB-scale synthetic mzML, with the headline numbers backing the "full hashing is not the bottleneck" claim |
 
 ## Reading order
 
