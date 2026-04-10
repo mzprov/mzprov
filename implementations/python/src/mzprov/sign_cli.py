@@ -185,7 +185,12 @@ def main(argv: list[str] | None = None) -> int:
     except (KeyNotFoundError, MalformedKey) as e:
         print(f"mzprov sign: key error: {e}", file=sys.stderr)
         return EXIT_KEY_ERROR
-    except (MissingArtifact, SqliteNotQuiescent) as e:
+    except (MissingArtifact, SqliteNotQuiescent, FileNotFoundError) as e:
+        # FileNotFoundError is what canonicalize_d raises for a directory
+        # whose suffix is .d but which is missing analysis.tdf or
+        # analysis.tdf_bin. The directory looks signable from the outside
+        # (the suffix matches) but the content is malformed; that is a
+        # SIDECAR_ERROR, not a generic exception.
         print(f"mzprov sign: {e}", file=sys.stderr)
         return EXIT_SIDECAR_ERROR
     except ProvenanceError as e:

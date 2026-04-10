@@ -688,3 +688,70 @@ def test_sign_cli_nonexistent_path_returns_sidecar_error(tmp_path):
         "--experiment-name", "ghost",
     ])
     assert rc == EXIT_SIDECAR_ERROR
+
+
+def test_sign_cli_d_with_missing_analysis_tdf_returns_sidecar_error(tmp_path):
+    """Regression: a directory whose suffix is .d but which is missing
+    analysis.tdf MUST return EXIT_SIDECAR_ERROR (3), not EXIT_GENERIC (1).
+
+    The .d signing path eventually calls canonicalize_d, which raises
+    FileNotFoundError for missing analysis.tdf and analysis.tdf_bin.
+
+    Pre-fix behavior: FileNotFoundError fell through to the generic
+    Exception catch in sign_cli.main and returned EXIT_GENERIC, which
+    contradicted the documented exit-code contract for malformed
+    sidecars.
+    Post-fix behavior: FileNotFoundError is caught alongside
+    MissingArtifact and SqliteNotQuiescent and mapped to
+    EXIT_SIDECAR_ERROR.
+    """
+    from mzprov.sign_cli import EXIT_SIDECAR_ERROR
+    from mzprov.sign_cli import main as sign_main
+
+    # An empty directory ending in .d, no analysis.tdf, no analysis.tdf_bin.
+    broken_d = tmp_path / "broken.d"
+    broken_d.mkdir()
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_bytes(b'[experiment]\nname = "broken"\n')
+
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+
+    rc = sign_main([
+        str(broken_d),
+        "--experiment-name", "broken",
+        "--config", str(config_path),
+        "--key", str(key_dir),
+    ])
+
+    assert rc == EXIT_SIDECAR_ERROR
+
+
+def test_sign_cli_d_with_missing_analysis_tdf_bin_returns_sidecar_error(tmp_path):
+    """Same regression class as the missing-analysis.tdf case, but for
+    the partial-broken case where analysis.tdf is present but
+    analysis.tdf_bin is missing. Both raise FileNotFoundError from
+    canonicalize_d and both MUST be reported as SIDECAR_ERROR."""
+    from mzprov.sign_cli import EXIT_SIDECAR_ERROR
+    from mzprov.sign_cli import main as sign_main
+
+    broken_d = tmp_path / "partial-broken.d"
+    broken_d.mkdir()
+    (broken_d / "analysis.tdf").write_bytes(b"")  # exists but empty
+    # Note: analysis.tdf_bin intentionally missing.
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_bytes(b'[experiment]\nname = "partial-broken"\n')
+
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+
+    rc = sign_main([
+        str(broken_d),
+        "--experiment-name", "partial-broken",
+        "--config", str(config_path),
+        "--key", str(key_dir),
+    ])
+
+    assert rc == EXIT_SIDECAR_ERROR
