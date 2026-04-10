@@ -466,3 +466,74 @@ def test_vacuum_after_signing_still_verifies(tmp_path):
     conn.close()
     result = verify_sidecar(sidecar)
     assert result.overall_ok, "VACUUM broke verification — canonical form is wrong"
+
+
+# ---------------------------------------------------------------------------
+# §1.5 — find_sidecar_for() discovery: regression tests for the multi-bundle
+# discovery bug. Pre-fix, find_sidecar_for(b.d) could silently return
+# a.provenance.json from a sibling bundle because the .d branch globbed
+# the parent and returned the first hit lexicographically. Post-fix the
+# .d branch tries stem-based pairing first and falls back only to a
+# UNIQUE sibling.
+# ---------------------------------------------------------------------------
+
+
+def test_find_sidecar_for_d_uses_stem_based_pairing_in_multi_bundle_layout(tmp_path):
+    """Regression: find_sidecar_for(b.d) MUST return b.provenance.json,
+    not a.provenance.json, when both bundles share a parent directory.
+    """
+    from mzprov.verify import find_sidecar_for
+
+    for name in ("a", "b"):
+        d = tmp_path / f"{name}.d"
+        d.mkdir()
+        (d / "analysis.tdf").write_bytes(b"")
+        (tmp_path / f"{name}.provenance.json").write_text("{}")
+
+    assert find_sidecar_for(tmp_path / "a.d") == tmp_path / "a.provenance.json"
+    assert find_sidecar_for(tmp_path / "b.d") == tmp_path / "b.provenance.json"
+
+
+def test_find_sidecar_for_d_falls_back_to_unique_sibling(tmp_path):
+    """When the conventional name is absent and exactly ONE non-conventional
+    sibling exists, the verifier MAY return it as a fallback.
+    """
+    from mzprov.verify import find_sidecar_for
+
+    d = tmp_path / "x.d"
+    d.mkdir()
+    (d / "analysis.tdf").write_bytes(b"")
+    (tmp_path / "lone-sidecar.provenance.json").write_text("{}")
+
+    assert find_sidecar_for(d) == tmp_path / "lone-sidecar.provenance.json"
+
+
+def test_find_sidecar_for_d_returns_none_on_ambiguous_siblings(tmp_path):
+    """When the conventional name is absent and multiple non-conventional
+    siblings exist, the verifier MUST refuse to guess and return None.
+    Returning the first lexicographically would be the bug-before-fix.
+    """
+    from mzprov.verify import find_sidecar_for
+
+    d = tmp_path / "x.d"
+    d.mkdir()
+    (d / "analysis.tdf").write_bytes(b"")
+    (tmp_path / "alpha.provenance.json").write_text("{}")
+    (tmp_path / "beta.provenance.json").write_text("{}")
+
+    assert find_sidecar_for(d) is None
+
+
+def test_find_sidecar_for_mzml_returns_none_on_ambiguous_siblings(tmp_path):
+    """Symmetric tightening: the mzML branch's fallback also requires
+    uniqueness so a multi-bundle dir cannot silently misroute.
+    """
+    from mzprov.verify import find_sidecar_for
+
+    mzml = tmp_path / "x.mzML"
+    mzml.write_text("<mzML/>")
+    # No conventional x.provenance.json — only two ambiguous siblings.
+    (tmp_path / "alpha.provenance.json").write_text("{}")
+    (tmp_path / "beta.provenance.json").write_text("{}")
+
+    assert find_sidecar_for(mzml) is None

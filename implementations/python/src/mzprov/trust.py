@@ -297,13 +297,19 @@ def trusted_key_from_sidecar_file(sidecar_path: PathLike, *, comment: str) -> Tr
     want to trust the key it was signed with going forward". The user
     is asserting trust based on out-of-band confidence in the dataset's
     origin (e.g. they got it from a known collaborator).
+
+    Works for both ``.d`` sidecars (``timsim.provenance.v0``) and mzml
+    sidecars (``timsim.provenance.mzml.v0``). Uses the polymorphic
+    ``parse_sidecar`` dispatcher rather than ``Sidecar.from_json_bytes``
+    directly, because the latter only accepts the .d type and would
+    raise ``UnknownVersion`` on an mzml sidecar.
     """
-    from mzprov.envelope import Sidecar
+    from mzprov.envelope import parse_sidecar
 
     sidecar_path = Path(sidecar_path)
     if not sidecar_path.is_file():
         raise KeyNotFoundError(f"sidecar file not found: {sidecar_path}")
-    sidecar = Sidecar.from_json_bytes(sidecar_path.read_bytes())
+    sidecar = parse_sidecar(sidecar_path.read_bytes())
     try:
         public_key = public_key_from_b64(sidecar.verifying_key)
     except ValueError as e:

@@ -94,12 +94,34 @@ Given an input path `p`:
    - Otherwise, return `None` (verifier reports `UNSIGNED`).
 3. **If `p` is a directory:**
    - **If `p.suffix == ".d"`:** the sidecar conventionally lives one
-     level up. Glob for `*.provenance.json` in `p.parent`. If any
-     match, return the first (lexicographic order).
-   - Then, glob for `*.provenance.json` in `p` itself. If any match,
-     return the first.
-   - Otherwise, return `None`.
+     level up with a stem-based pairing. Look for
+     `{stem}.provenance.json` in `p.parent`, where `stem` is `p.name`
+     with the trailing `.d` removed. If it exists, return it. This is
+     what defends against the multi-bundle case where several `.d`
+     directories share a parent: a verifier asked about `b.d` MUST
+     return `b.provenance.json`, not `a.provenance.json` from a
+     sibling bundle. If the conventional name is absent, fall back to
+     a glob for `*.provenance.json` in `p.parent`; return the match
+     **only if exactly one** exists. If multiple match, the discovery
+     is ambiguous and the verifier MUST return `None` rather than
+     guess.
+   - Otherwise (not a `.d` directory), glob for `*.provenance.json`
+     in `p` itself. If any match, return the first (lexicographic
+     order). This is the "experiment directory" case where the
+     directory contains both the source artifact and its single
+     sidecar.
 4. **Otherwise**, return `None`.
+
+The "exactly one" requirement on the `.d` and `.mzML` sibling
+fallbacks is what catches the multi-bundle discovery bug. A naive
+"first match wins" implementation looks correct in single-bundle
+test setups but silently misroutes verification in any directory
+containing multiple signed datasets. Conforming implementations MUST
+implement the uniqueness check; the regression tests
+`test_find_sidecar_for_d_uses_stem_based_pairing_in_multi_bundle_layout`,
+`test_find_sidecar_for_d_returns_none_on_ambiguous_siblings`, and
+`test_find_sidecar_for_mzml_returns_none_on_ambiguous_siblings` in
+`implementations/python/tests/test_sign_verify.py` exercise it.
 
 ### 3.2 `.d` source location
 

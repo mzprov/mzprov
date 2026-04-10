@@ -166,12 +166,26 @@ def find_sidecar_for(path: PathLike) -> Path | None:
 
     Discovery rules:
         - If ``path`` is itself a sidecar JSON file, return it.
-        - If ``path`` is an ``.mzML`` file, look for ``{stem}.provenance.json``
-          in the same directory.
-        - If ``path`` is a ``.d`` directory, look for the sidecar one level up.
-        - If ``path`` is any other directory, look for ``*.provenance.json``
-          inside it.
+        - If ``path`` is an ``.mzML`` file, look for
+          ``{stem}.provenance.json`` in the same directory first; if
+          absent, fall back to a UNIQUE ``*.provenance.json`` sibling.
+          If neither resolves unambiguously, return ``None``.
+        - If ``path`` is a ``.d`` directory, the sidecar conventionally
+          lives one level up with a stem-based pairing. Look for
+          ``{stem}.provenance.json`` in ``path.parent`` (where ``stem``
+          is the ``.d`` name without the ``.d`` suffix). If absent,
+          fall back to a UNIQUE ``*.provenance.json`` sibling in the
+          parent. If neither resolves unambiguously, return ``None``.
+        - If ``path`` is any other directory, look for
+          ``*.provenance.json`` inside it.
         - Otherwise return None.
+
+    The "unique sibling" rule is what defends against the multi-bundle
+    case where several signed datasets share a parent directory.
+    Without it, ``find_sidecar_for(b.d)`` could silently return
+    ``a.provenance.json`` from a sibling bundle just because ``a``
+    sorts first; with it, the verifier returns ``None`` and forces
+    the caller to disambiguate.
     """
     path = Path(path)
 
@@ -182,20 +196,33 @@ def find_sidecar_for(path: PathLike) -> Path | None:
         candidate = path.with_name(path.stem + ".provenance.json")
         if candidate.is_file():
             return candidate
-        # Also accept any *.provenance.json sibling if the convention
-        # was not followed at sign time.
+        # Fall back to a UNIQUE sibling. Multiple matches are
+        # ambiguous, not best-effort: returning the first
+        # lexicographically would silently pick a sidecar from a
+        # different bundle that happens to share the parent directory.
         siblings = sorted(path.parent.glob("*.provenance.json"))
-        if siblings:
+        if len(siblings) == 1:
             return siblings[0]
         return None
 
     if path.is_dir():
-        # If this directory itself looks like a .d, search its parent first.
+        # If this directory itself looks like a .d, the sidecar lives
+        # one level up with a stem-based pairing. The bug-before-fix
+        # was that this branch ignored ``path.name`` entirely and just
+        # returned the first sibling sidecar lexicographically, which
+        # silently picked the wrong sidecar in multi-bundle layouts.
         if path.suffix == ".d":
+            stem = path.name[: -len(".d")]
+            candidate = path.parent / f"{stem}.provenance.json"
+            if candidate.is_file():
+                return candidate
+            # Fall back to a UNIQUE sibling sidecar in the parent.
             parent_hits = sorted(path.parent.glob("*.provenance.json"))
-            if parent_hits:
+            if len(parent_hits) == 1:
                 return parent_hits[0]
+            return None
 
+        # Generic directory: any *.provenance.json inside.
         hits = sorted(path.glob("*.provenance.json"))
         if hits:
             return hits[0]

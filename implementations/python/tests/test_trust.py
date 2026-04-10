@@ -662,3 +662,80 @@ def test_verify_cli_require_trusted_without_registry_returns_7(tmp_path):
         else:
             os.environ["XDG_CONFIG_HOME"] = old
     assert rc == EXIT_KEY_NOT_TRUSTED
+
+
+# ---------------------------------------------------------------------------
+# Regression: trusting from an mzml sidecar
+#
+# trusted_key_from_sidecar_file() used to call Sidecar.from_json_bytes()
+# directly, which only accepts the .d attestation type. Passing an mzml
+# sidecar raised UnknownVersion, blocking the trust workflow for the
+# entire mzml signing path. Fix: use parse_sidecar() polymorphically.
+# ---------------------------------------------------------------------------
+
+
+def test_trusted_key_from_mzml_sidecar(tmp_path):
+    """Regression: trusted_key_from_sidecar_file MUST accept mzml sidecars.
+
+    Pre-fix: raised UnknownVersion because Sidecar.from_json_bytes only
+    handles the .d type.
+    Post-fix: succeeds via parse_sidecar polymorphic dispatch.
+    """
+    from mzprov import sign_mzml_output
+    from mzprov._fixtures import make_minimal_mzml
+    from mzprov.trust import trusted_key_from_sidecar_file
+
+    # Use a tmp key dir so we never touch the user's real signing key.
+    # mkdir is required: _resolve_keypair only auto-creates a keypair
+    # inside a directory that already exists.
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir(parents=True, exist_ok=True)
+    mzml_path = make_minimal_mzml(tmp_path, name="trust-mzml-test")
+    sidecar_path = sign_mzml_output(
+        mzml_path=mzml_path,
+        config_path=None,
+        experiment_name="trust-mzml-test",
+        tool_name="trust-mzml-test",
+        tool_version="0.0.1",
+        private_key_path=key_dir,
+    )
+
+    trusted = trusted_key_from_sidecar_file(
+        sidecar_path, comment="trust-mzml-test"
+    )
+
+    assert trusted.key_id, "trusted key has no key_id"
+    assert trusted.public_key_pem, "trusted key has no PEM"
+    assert "trust-mzml-test" in trusted.comment
+
+
+def test_trusted_key_from_d_sidecar_still_works(tmp_path):
+    """Sanity check that the .d path still works after the parse_sidecar
+    refactor — the polymorphic dispatcher must accept both attestation
+    types.
+    """
+    from mzprov import sign_simulation_output
+    from mzprov._fixtures import make_minimal_d
+    from mzprov.trust import trusted_key_from_sidecar_file
+
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir(parents=True, exist_ok=True)
+    d_path = make_minimal_d(tmp_path, name="trust-d-test")
+    config_path = tmp_path / "config.toml"
+    config_path.write_bytes(b'[experiment]\nname = "trust-d-test"\n')
+    sidecar_path = sign_simulation_output(
+        d_path=d_path,
+        ground_truth_path=None,
+        config_path=config_path,
+        experiment_name="trust-d-test",
+        simulator_version="0.0.1",
+        private_key_path=key_dir,
+    )
+
+    trusted = trusted_key_from_sidecar_file(
+        sidecar_path, comment="trust-d-test"
+    )
+
+    assert trusted.key_id
+    assert trusted.public_key_pem
+    assert "trust-d-test" in trusted.comment
