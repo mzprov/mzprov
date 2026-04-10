@@ -39,9 +39,9 @@ when there is at least one implementation, test vectors, and approval — see
 | mzML canonicalization (spectrum content, all binary arrays) | v0 frozen |
 | Trust model (`--expected-key-id`, `--require-trusted`, `--public-key`) | v0 frozen |
 | Verifier exit codes (`0`–`7`) | v0 frozen |
-| Python reference implementation | being lifted from `imspy_simulation.provenance` |
+| Python reference implementation | shipping (lifted from `imspy_simulation.provenance`, 168 tests passing) |
 | C# implementation | in development |
-| Cross-implementation conformance test vectors | in development |
+| Cross-implementation conformance test vectors | v0 ships 16 vectors (2 valid, 11 invalid, 3 canonicalization fixtures) |
 | Vendor RAW canonicalization | out of scope for v0 |
 | Repository countersignature | out of scope for v0 |
 | Hardware-backed key protection | out of scope for v0 |
@@ -51,8 +51,8 @@ when there is at least one implementation, test vectors, and approval — see
 `mzprov` is an attestation scheme, not a certificate of scientific truth. It
 guarantees provenance (these bytes were signed by this key at this time),
 not correctness (the experiment was well designed and executed). See
-[`spec/security-considerations.md`](spec/security-considerations.md) once it
-lands for the full list of properties not provided.
+[`spec/security-considerations.md`](spec/security-considerations.md) for
+the full list of properties not provided.
 
 In particular, in v0:
 
@@ -64,39 +64,146 @@ In particular, in v0:
 
 ## Quick start
 
-> The Python reference implementation is currently being lifted from
-> `imspy_simulation.provenance` and will land in
-> [`implementations/python/`](implementations/python/) shortly. Once installed
-> via `pip install mzprov`, the planned CLI is:
+### Install
+
+`mzprov` is not yet on PyPI. Install the Python reference implementation
+from a clone of this repository:
 
 ```bash
-# Sign a Bruker .d directory
-mzprov sign /data/run.d --config /data/run.toml --experiment-name run-001
+git clone <repo-url>             # URL will appear here once mzprov is pushed to GitHub
+cd mzprov
+pip install -e implementations/python
+```
 
-# Sign an mzML file from any converter or simulator
-mzprov sign /data/run.mzML --tool-name msconvert --tool-version 3.0.24
+This installs the unified `mzprov` console script and three flat
+aliases (`mzprov-sign`, `mzprov-verify`, `mzprov-keys`). Python ≥3.11
+required. The only runtime dependency is `cryptography` (Ed25519,
+BLAKE2b, SHA-256).
 
-# Verify
+### Confirm your install with a known-good test vector
+
+mzprov ships ready-to-verify vectors under
+[`test-vectors/`](test-vectors/). The fastest way to confirm your
+install is wired correctly is to verify the minimal valid `.d` vector
+— no need to bring your own data:
+
+```bash
+mzprov verify test-vectors/sidecar/valid/d-v0-minimal/
+```
+
+Expected output:
+
+```
+TimSim provenance verification
+  experiment:        d-v0-minimal
+  producer:          TimSim mzprov-test-vectors/0.1.0
+  signed at:         2026-04-10T07:07:22.467Z
+  key id:            timsim-local-umdyuiienlum7prj
+  canonicalization:  v0
+
+   d_content_hash  OK         (sha256:2926eb20eb6cbe5d4...)
+   config_hash     OK         (sha256:dad70a13f2ba7a10c...)
+   content_hash    OK         (sha256:3cd20d9c8b3a20d53...)
+   signature       OK         (ed25519)
+
+VERIFIED
+```
+
+Exit code 0 means success. To see the verifier *reject* a tampered
+bundle (and confirm tamper detection works):
+
+```bash
+mzprov verify test-vectors/sidecar/invalid/d-hash-mismatch-tdf-bin-tampered/
+echo "exit=$?"   # should print: exit=5
+```
+
+The full exit-code contract (`0` verified, `3` sidecar error, `4`
+unsigned, `5` hash mismatch, `6` signature mismatch, `7` trust
+failure) is documented in [`spec/trust-model.md`](spec/trust-model.md).
+
+### Sign your own data
+
+```bash
+# Sign a Bruker .d directory. --config is REQUIRED for .d signing
+# (the .d signing path binds the experiment to its config bytes).
+mzprov sign /data/run.d \
+    --experiment-name run-001 \
+    --config /data/run.toml \
+    --tool-version 1.0.0
+
+# Sign an mzML file from any tool. --config is OPTIONAL for mzML.
+mzprov sign /data/run.mzML \
+    --experiment-name run-001 \
+    --tool-name msconvert \
+    --tool-version 3.0.24 \
+    --config /data/run.toml
+```
+
+The first time you sign, `mzprov` auto-generates a software signing
+key at `~/.config/timsim/keys/signing_key.pem` and prints its key id.
+The `timsim/` path is intentionally preserved from the lift from
+`imspy_simulation.provenance`; a v1 rename to `~/.config/mzprov/`
+(with a one-time migration helper) is recorded as deferred work in
+[`docs/faq.md`](docs/faq.md). For the same reason, derived key ids
+are prefixed with `timsim-local-`.
+
+### Verify
+
+```bash
 mzprov verify /data/run.d
 mzprov verify /data/run.mzML
 mzprov verify /data/run.provenance.json
-
-# Verify with trust pinning
-mzprov verify /data/run.d --expected-key-id mzprov-local-...
-mzprov verify /data/run.d --require-trusted
-mzprov verify /data/run.d --public-key /etc/known_signer.pem
-
-# Manage keys
-mzprov keys show
-mzprov keys export --to my_public_key.pem
-mzprov keys trust /data/in/their_run.provenance.json --comment "lab X"
-mzprov keys list
-mzprov keys untrust mzprov-local-...
 ```
 
-For TimSim users: `imspy_simulation.provenance` continues to work and becomes
-a thin wrapper around `mzprov`. Existing `timsim-verify` and `timsim-keys`
-invocations are preserved.
+The verifier auto-discovers the sidecar from any of these paths.
+Multi-bundle directories are handled safely: discovery requires a
+unique sidecar match and refuses to guess on ambiguity (see
+[`spec/trust-model.md`](spec/trust-model.md) §3.1).
+
+### Verify with trust pinning
+
+```bash
+# Pin to a specific expected signer's key id
+mzprov verify /data/run.d --expected-key-id timsim-local-yourkey
+
+# Require the signer to be in the local trusted-keys registry
+mzprov verify /data/run.d --require-trusted
+
+# Cross-check the embedded verifying key against an out-of-band PEM
+mzprov verify /data/run.d --public-key /etc/known_signer.pem
+```
+
+The three options are independent and can be combined.
+
+### Manage keys and trust grants
+
+```bash
+# Show the local signing key id and where it lives
+mzprov keys show
+
+# Export the local public key (to share with collaborators)
+mzprov keys export --to my_public_key.pem
+
+# Trust a specific signer's key (from a sidecar JSON or from a PEM)
+mzprov keys trust /data/in/their_run.provenance.json --comment "lab X"
+mzprov keys trust /etc/collaborator_pub.pem --comment "lab Y"
+
+# List trusted keys
+mzprov keys list
+
+# Revoke trust
+mzprov keys untrust timsim-local-yourkey
+```
+
+The `--comment` flag is required on `mzprov keys trust` so that trust
+grants are deliberate and auditable rather than absent-minded.
+
+### TimSim integration
+
+For TimSim users: `imspy_simulation.provenance` continues to work
+unchanged and is now a thin wrapper around `mzprov`. The legacy
+`timsim-verify` and `timsim-keys` console scripts are preserved and
+dispatch to `mzprov.cli:main` and `mzprov.keys_cli:main` respectively.
 
 ## Repository layout
 
