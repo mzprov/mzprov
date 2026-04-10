@@ -1,0 +1,24 @@
+{
+  "_metadata": {
+    "description": "A valid .d sidecar paired with its (untampered) source .d, but the sidecar's payload.experiment_name has been rewritten to 'TAMPERED' after signing. Hash recomputation succeeds. Signature verification MUST fail because re-canonicalizing the modified payload produces different bytes than what was signed. Verifier MUST report SIGNATURE_MISMATCH.",
+    "expected_exit_code": 6,
+    "expected_failure": "SIGNATURE_MISMATCH",
+    "expected_result": "REJECT",
+    "spec_section": "spec/signature-scheme.md"
+  },
+  "payload": {
+    "canonicalization_version": "v0",
+    "config_hash": "sha256:2dd12a1a3a4973fa205ac11c5730ffac08d724dc770bd9b78884ab08eb106405",
+    "content_hash": "sha256:a8a9cabbc1ea66e89921c6ff893c7606047af4388dba7b65cda01aace00feafb",
+    "d_content_hash": "sha256:2926eb20eb6cbe5d448bd8348dd56375891130eec777313adb33d3e8ed021cab",
+    "experiment_name": "TAMPERED",
+    "ground_truth_hash": "",
+    "key_id": "timsim-local-umdyuiienlum7prj",
+    "simulator_name": "TimSim",
+    "simulator_version": "mzprov-test-vectors/0.1.0",
+    "timestamp_utc": "2026-04-10T07:07:22.508Z"
+  },
+  "signature": "ed25519:base64:akFFCbTpHQGWzDuyYW/IDsSzwlIz/JsIx1OTuZI/3srlF60Y2iAaQOzW+ceED30XciXy8aFEffkzbXRfe1Z7BA==",
+  "type": "timsim.provenance.v0",
+  "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
+}

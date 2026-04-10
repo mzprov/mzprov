@@ -1,0 +1,23 @@
+{
+  "_metadata": {
+    "description": "A valid mzML sidecar paired with its (untampered) source mzML, but the sidecar's payload.experiment_name has been rewritten to 'TAMPERED' after signing. Hash recomputation succeeds; signature verification MUST fail with SIGNATURE_MISMATCH.",
+    "expected_exit_code": 6,
+    "expected_failure": "SIGNATURE_MISMATCH",
+    "expected_result": "REJECT",
+    "spec_section": "spec/signature-scheme.md"
+  },
+  "payload": {
+    "canonicalization_version": "v0",
+    "config_hash": "sha256:606f85ae4cce92d871357a7459802e56428e1d51915680eeedf7adf68240096a",
+    "content_hash": "sha256:6f75a6d84b6c94c4af82699cdfb3988ef7c33a67fbb432b8aada9fde55b2d810",
+    "experiment_name": "TAMPERED",
+    "key_id": "timsim-local-umdyuiienlum7prj",
+    "mzml_content_hash": "sha256:bd98911f5558b97a4939e915105af31e7244b0e9367f0a88f168a8d0e713780d",
+    "timestamp_utc": "2026-04-10T07:07:22.606Z",
+    "tool_name": "mzprov-test-vectors",
+    "tool_version": "0.1.0"
+  },
+  "signature": "ed25519:base64:VyzPquUgg8c47dXoRC5DT66fE7uG2axaBVXvrkYU6nqHGfI87JK5KYKdkONsgqU3istts76bYgkIxbACp29aBQ==",
+  "type": "timsim.provenance.mzml.v0",
+  "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
+}

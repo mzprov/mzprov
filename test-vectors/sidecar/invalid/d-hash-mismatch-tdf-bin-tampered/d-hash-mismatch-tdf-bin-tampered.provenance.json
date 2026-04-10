@@ -1,0 +1,24 @@
+{
+  "_metadata": {
+    "description": "A valid .d sidecar paired with a .d whose analysis.tdf_bin has been byte-flipped at offset 100 AFTER signing. The signature still verifies (the payload is unchanged) but the recomputed d_content_hash MUST diverge from payload.d_content_hash, and the verifier MUST report HASH_MISMATCH on the d_content_hash field.",
+    "expected_exit_code": 5,
+    "expected_failure": "HASH_MISMATCH",
+    "expected_result": "REJECT",
+    "spec_section": "spec/canonicalization-d-v0.md"
+  },
+  "payload": {
+    "canonicalization_version": "v0",
+    "config_hash": "sha256:b8a9aa943e6ea97be425e291d9001ab2f64b6ff828c3dee9747572fe16077b99",
+    "content_hash": "sha256:85f06af8607ce042366acae3581354241b002e1b550700c908b8a4d805669579",
+    "d_content_hash": "sha256:2926eb20eb6cbe5d448bd8348dd56375891130eec777313adb33d3e8ed021cab",
+    "experiment_name": "d-hash-mismatch-tdf-bin-tampered",
+    "ground_truth_hash": "",
+    "key_id": "timsim-local-umdyuiienlum7prj",
+    "simulator_name": "TimSim",
+    "simulator_version": "mzprov-test-vectors/0.1.0",
+    "timestamp_utc": "2026-04-10T07:07:22.491Z"
+  },
+  "signature": "ed25519:base64:3sccQ/jsmFeGd0k7+HD4edAO9SheyQtAlkRtRo56E22B5RDDLbPnde7/5d/zpFex7b/NB9t0o848ttiSi5+nBg==",
+  "type": "timsim.provenance.v0",
+  "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
+}

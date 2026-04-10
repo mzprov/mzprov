@@ -1,0 +1,44 @@
+# Licensing
+
+This repository uses three licenses, applied by directory. Each directory's
+contents are covered by exactly one of them.
+
+## docs/ and spec/ — CC-BY-4.0
+
+The non-normative documentation under `docs/` and the normative specification
+under `spec/` are licensed under the Creative Commons Attribution 4.0
+International license. Full text in [`LICENSE-CC-BY`](LICENSE-CC-BY).
+
+You are free to share, adapt, and quote these materials in academic papers,
+other specifications, and derivative documents, provided attribution is
+preserved.
+
+## implementations/python/ — Apache-2.0
+
+The Python reference implementation under `implementations/python/` is
+licensed under the Apache License 2.0. Full text in
+[`LICENSE-APACHE`](LICENSE-APACHE).
+
+The Apache 2.0 patent grant is intentional: it gives downstream commercial
+implementers more comfort than a permissive license without an explicit
+patent grant.
+
+## test-vectors/ — CC0 1.0
+
+The cross-implementation test vectors under `test-vectors/` are released into
+the public domain under the Creative Commons CC0 1.0 Universal dedication.
+Full text in [`LICENSE-CC0`](LICENSE-CC0).
+
+This is intentional: test fixtures should have zero attribution burden so
+that any implementation in any language can ship them as part of its own
+test suite without dragging in license obligations.
+
+## Other directories
+
+`README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and other top-level metadata
+files are CC-BY-4.0, same as `docs/`.
+
+The C# implementation under `implementations/csharp/`, when it lands, will
+declare its own license inside that directory. The expected license is
+Apache-2.0, matching the Python reference implementation, but this is the
+C# implementer's call.

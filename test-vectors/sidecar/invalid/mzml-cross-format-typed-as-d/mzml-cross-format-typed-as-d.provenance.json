@@ -1,0 +1,23 @@
+{
+  "_metadata": {
+    "description": "A valid mzML sidecar paired with its (untampered) source mzML, but the sidecar's type tag has been changed from 'timsim.provenance.mzml.v0' to 'timsim.provenance.v0'. The payload schema still has the mzml shape so the .d parser MUST reject it for missing required .d fields (d_content_hash, ground_truth_hash).",
+    "expected_exit_code": 3,
+    "expected_failure": "CROSS_FORMAT_REUSE",
+    "expected_result": "REJECT",
+    "spec_section": "spec/sidecar-format.md"
+  },
+  "payload": {
+    "canonicalization_version": "v0",
+    "config_hash": "sha256:b2bbd6bdb058c534d1719605ea9c2854e9c885b4a20e3c1444d750b829e26a52",
+    "content_hash": "sha256:3a1ff3b37f852c90fe73ed18f8ca8d876a07ee70b27df2348ef354fcb0e86f2a",
+    "experiment_name": "mzml-cross-format-typed-as-d",
+    "key_id": "timsim-local-umdyuiienlum7prj",
+    "mzml_content_hash": "sha256:bd98911f5558b97a4939e915105af31e7244b0e9367f0a88f168a8d0e713780d",
+    "timestamp_utc": "2026-04-10T07:07:22.617Z",
+    "tool_name": "mzprov-test-vectors",
+    "tool_version": "0.1.0"
+  },
+  "signature": "ed25519:base64:1blmGgg/vH8sKznRYRkz8NNHohqo8DB28HyHJ2EpCLGfFyYyMnVBd54vGXDoqN8+wqvUez/aRFaw4mjAx+ueBQ==",
+  "type": "timsim.provenance.v0",
+  "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
+}

@@ -1,0 +1,24 @@
+{
+  "_metadata": {
+    "description": "Minimal valid .d sidecar paired with its source .d directory and config copy, produced by the Python reference implementation. Verifier MUST report VERIFIED.",
+    "expected_exit_code": 0,
+    "expected_failure": null,
+    "expected_result": "VERIFY",
+    "spec_section": "spec/sidecar-format.md"
+  },
+  "payload": {
+    "canonicalization_version": "v0",
+    "config_hash": "sha256:dad70a13f2ba7a10c90752d4abf0f52d8aae8619ce1987750e001f2753509c8a",
+    "content_hash": "sha256:3cd20d9c8b3a20d53e0162644f8e5f9e2c39aa6f44b441a53f4aacaddfda81fd",
+    "d_content_hash": "sha256:2926eb20eb6cbe5d448bd8348dd56375891130eec777313adb33d3e8ed021cab",
+    "experiment_name": "d-v0-minimal",
+    "ground_truth_hash": "",
+    "key_id": "timsim-local-umdyuiienlum7prj",
+    "simulator_name": "TimSim",
+    "simulator_version": "mzprov-test-vectors/0.1.0",
+    "timestamp_utc": "2026-04-10T07:07:22.467Z"
+  },
+  "signature": "ed25519:base64:UC4xFTexkjHmMZskmMOnnKRbnF7iGlPhHHMZ77Y5bZdRXFTk7MUJp2IT0K/1F4ZH4e2V+KzAH9bzEJrnqu7FCw==",
+  "type": "timsim.provenance.v0",
+  "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
+}

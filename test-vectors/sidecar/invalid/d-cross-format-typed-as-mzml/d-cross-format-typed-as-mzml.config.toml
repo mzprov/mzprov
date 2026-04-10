@@ -1,0 +1,3 @@
+[experiment]
+name = "d-cross-format-typed-as-mzml"
+description = "mzprov v0 test vector: d-cross-format-typed-as-mzml"

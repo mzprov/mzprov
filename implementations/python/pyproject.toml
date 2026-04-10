@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mzprov"
+version = "0.1.0"
+description = "Cryptographic provenance for mass spectrometry data: signing and verification of .d and mzML files"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11,<3.14"
+authors = [
+    { name = "David Teschner", email = "davidteschner@googlemail.com" },
+]
+keywords = [
+    "mass-spectrometry",
+    "provenance",
+    "ed25519",
+    "tamper-evidence",
+    "mzml",
+    "timstof",
+    "bruker",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Security :: Cryptography",
+]
+
+dependencies = [
+    "cryptography>=42",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-cov>=4",
+]
+xml-cross-validate = [
+    # For cross-validating mzML canonicalization against an independent parser.
+    # Used by tests/test_mzml.py via pytest.importorskip; never imported at runtime.
+    "pyteomics>=4.6",
+]
+
+[project.scripts]
+mzprov = "mzprov.main:main"
+mzprov-verify = "mzprov.cli:main"
+mzprov-keys = "mzprov.keys_cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mzprov"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short -m 'not slow'"
+markers = [
+    "slow: marks tests that build large fixtures, run real simulations, or hit real on-disk datasets (deselect by default; run with '-m slow' to include)",
+]

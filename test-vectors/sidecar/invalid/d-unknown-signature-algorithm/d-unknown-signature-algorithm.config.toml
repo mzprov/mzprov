@@ -1,0 +1,3 @@
+[experiment]
+name = "d-unknown-signature-algorithm"
+description = "mzprov v0 test vector: d-unknown-signature-algorithm"

@@ -1,0 +1,23 @@
+{
+  "_metadata": {
+    "description": "Minimal valid mzML sidecar paired with its source mzML file and config copy, produced by the Python reference implementation. Verifier MUST report VERIFIED.",
+    "expected_exit_code": 0,
+    "expected_failure": null,
+    "expected_result": "VERIFY",
+    "spec_section": "spec/sidecar-format.md"
+  },
+  "payload": {
+    "canonicalization_version": "v0",
+    "config_hash": "sha256:bdaa54cf870d6dbc3b30984bd48a30e09324e73e417aeeb8d8489a9a6f203ac9",
+    "content_hash": "sha256:2ceeb9946bb65e5a07eb39716ba30c4a7cce2420744abc148646a07a7f6283d3",
+    "experiment_name": "mzml-v0-minimal",
+    "key_id": "timsim-local-umdyuiienlum7prj",
+    "mzml_content_hash": "sha256:bd98911f5558b97a4939e915105af31e7244b0e9367f0a88f168a8d0e713780d",
+    "timestamp_utc": "2026-04-10T07:07:22.474Z",
+    "tool_name": "mzprov-test-vectors",
+    "tool_version": "0.1.0"
+  },
+  "signature": "ed25519:base64:mxoXrjnNCzj6Uk1um5PluYy96ysmbQeNAUib/P84GrT8C1ZkI7HdF0LxMyygDUolOuMiiuD0CbJMv8UKKyKJCQ==",
+  "type": "timsim.provenance.mzml.v0",
+  "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
+}

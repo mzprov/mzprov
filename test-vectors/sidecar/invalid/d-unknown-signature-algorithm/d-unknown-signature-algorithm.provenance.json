@@ -1,0 +1,24 @@
+{
+  "_metadata": {
+    "description": "A valid .d sidecar paired with its (untampered) source .d, but the sidecar's signature algorithm prefix has been changed from 'ed25519:' to 'xed25519:' (a fictional algorithm name). The verifier MUST refuse signatures with an unknown algorithm prefix and MUST NOT silently fall through to verifying with the embedded key under an unknown algorithm name. The reference verifier raises MalformedSidecar from the signature decoder, mapped to SIDECAR_ERROR (3).",
+    "expected_exit_code": 3,
+    "expected_failure": "UNKNOWN_SIGNATURE_ALGORITHM",
+    "expected_result": "REJECT",
+    "spec_section": "spec/signature-scheme.md"
+  },
+  "payload": {
+    "canonicalization_version": "v0",
+    "config_hash": "sha256:3ac5d4830288a0a5bd17f3334194f60b60f7de653c38f1507dab0887481499e4",
+    "content_hash": "sha256:091e67a7df39747c6c28808a818463b5e4817e2b4efcca1a791ee95fd9da42ef",
+    "d_content_hash": "sha256:2926eb20eb6cbe5d448bd8348dd56375891130eec777313adb33d3e8ed021cab",
+    "experiment_name": "d-unknown-signature-algorithm",
+    "ground_truth_hash": "",
+    "key_id": "timsim-local-umdyuiienlum7prj",
+    "simulator_name": "TimSim",
+    "simulator_version": "mzprov-test-vectors/0.1.0",
+    "timestamp_utc": "2026-04-10T07:07:22.558Z"
+  },
+  "signature": "xed25519:base64:NSWFS9AelgqyuUmxDhfmJzqWFvfkVXoypZbQGZJUQBngmXiuqXeD2+WokuDWNJTV6VLbkt3tB7+XsfHEa58eAQ==",
+  "type": "timsim.provenance.v0",
+  "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
+}

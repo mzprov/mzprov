@@ -1,0 +1,23 @@
+{
+  "_metadata": {
+    "description": "A valid mzML sidecar paired with an mzML whose MS1 spectrum scan start time cvParam has been changed from 0.5 to 0.7 AFTER signing. The mzml_content_hash includes the canonical rt field, so the recomputed hash MUST diverge from payload.mzml_content_hash and the verifier MUST report HASH_MISMATCH on mzml_content_hash. The XML and base64 remain structurally valid; only a hashed semantic value changed.",
+    "expected_exit_code": 5,
+    "expected_failure": "HASH_MISMATCH",
+    "expected_result": "REJECT",
+    "spec_section": "spec/canonicalization-mzml-v0.md"
+  },
+  "payload": {
+    "canonicalization_version": "v0",
+    "config_hash": "sha256:5b4978934ef4c7f2eec4e2ddfe4ec353eb6dd9714268eb2d6223322c6c3a5d61",
+    "content_hash": "sha256:236a5fb450cf16e3713111edd387f82686b91e99ed677c2c9660326c8067c0fb",
+    "experiment_name": "mzml-hash-mismatch-scan-start-time",
+    "key_id": "timsim-local-umdyuiienlum7prj",
+    "mzml_content_hash": "sha256:bd98911f5558b97a4939e915105af31e7244b0e9367f0a88f168a8d0e713780d",
+    "timestamp_utc": "2026-04-10T07:07:22.601Z",
+    "tool_name": "mzprov-test-vectors",
+    "tool_version": "0.1.0"
+  },
+  "signature": "ed25519:base64:yIyhHDuPfjVppnZ9Npa1057vyULYhw2+ySRwg0r+yqi6UT2G9KmltKr/PE6rVEc5NvenuJIBYoSNwEkqsZWOAA==",
+  "type": "timsim.provenance.mzml.v0",
+  "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
+}

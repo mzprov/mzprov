@@ -1,0 +1,24 @@
+{
+  "_metadata": {
+    "description": "A valid .d sidecar paired with its (untampered) source .d, but the sidecar's payload.d_content_hash has had its last hex character flipped after signing. The recomputed hash from disk does not match the field; verifier reports HASH_MISMATCH on d_content_hash. (NOTE: this is one possible diagnosis; the same mutation also breaks the signature, so implementations MAY surface this as SIGNATURE_MISMATCH if they verify the signature before recomputing hashes. The v0 reference verifier checks hashes first.)",
+    "expected_exit_code": 5,
+    "expected_failure": "HASH_MISMATCH",
+    "expected_result": "REJECT",
+    "spec_section": "spec/sidecar-format.md"
+  },
+  "payload": {
+    "canonicalization_version": "v0",
+    "config_hash": "sha256:58dd31a044fabce21a080f6eb9cf6fcc566fa68bc416009a6ba4a4bd8bffb1c5",
+    "content_hash": "sha256:6fcc7e7b97d0eb67280795ce40ea6b8a0a36910a11abb8c5cd957b944c73f644",
+    "d_content_hash": "sha256:2926eb20eb6cbe5d448bd8348dd56375891130eec777313adb33d3e8ed021ca0",
+    "experiment_name": "d-tampered-payload-d-content-hash",
+    "ground_truth_hash": "",
+    "key_id": "timsim-local-umdyuiienlum7prj",
+    "simulator_name": "TimSim",
+    "simulator_version": "mzprov-test-vectors/0.1.0",
+    "timestamp_utc": "2026-04-10T07:07:22.526Z"
+  },
+  "signature": "ed25519:base64:3DZTqWcJkNAjw8zbl+3AhXp9T8pXc9LKpCF+z9vNclphLtGOrrH1CE30+1x2Z8V+8QZQNve49C45M9l1Fbs1AA==",
+  "type": "timsim.provenance.v0",
+  "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
+}

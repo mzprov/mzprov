@@ -1,0 +1,24 @@
+{
+  "_metadata": {
+    "description": "A valid .d sidecar paired with its (untampered) source .d, but the sidecar's payload.key_id has been relabeled to a different (still well-formed) value. The verifying_key embedded in the sidecar is unchanged. The verifier MUST derive the key id from verifying_key (NOT from payload.key_id) and refuse the sidecar because the label and the actual signer disagree. The reference verifier raises MalformedSidecar at this check, mapped to SIDECAR_ERROR (3).",
+    "expected_exit_code": 3,
+    "expected_failure": "KEY_ID_CONSISTENCY",
+    "expected_result": "REJECT",
+    "spec_section": "spec/key-id-derivation.md"
+  },
+  "payload": {
+    "canonicalization_version": "v0",
+    "config_hash": "sha256:80eb7ac3e7040f764f2d027e8cf39d71124606b49bcae8e3f5f4b4f9d605f310",
+    "content_hash": "sha256:fb82df46578b27cc2143fc3b8d328524197a97696c608c3eb6cce7e52d4e74d5",
+    "d_content_hash": "sha256:2926eb20eb6cbe5d448bd8348dd56375891130eec777313adb33d3e8ed021cab",
+    "experiment_name": "d-wrong-key-id-label",
+    "ground_truth_hash": "",
+    "key_id": "timsim-local-aaaaaaaaaaaaaaaa",
+    "simulator_name": "TimSim",
+    "simulator_version": "mzprov-test-vectors/0.1.0",
+    "timestamp_utc": "2026-04-10T07:07:22.542Z"
+  },
+  "signature": "ed25519:base64:ZPs71nuelfjuwwaD+IYRBqoVxpCGYKkR7m/CqyZWzs6at4oESesY7iJyGvffF39VOCbNNRjZ5reDCXsWgCU2CQ==",
+  "type": "timsim.provenance.v0",
+  "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
+}
