@@ -222,10 +222,14 @@ def find_sidecar_for(path: PathLike) -> Path | None:
                 return parent_hits[0]
             return None
 
-        # Generic directory: any *.provenance.json inside.
+        # Generic directory: require a UNIQUE *.provenance.json inside.
+        # Multiple matches are ambiguous, not best-effort. Returning the
+        # first lexicographically would silently verify the wrong bundle
+        # in directories that contain several signed datasets.
         hits = sorted(path.glob("*.provenance.json"))
-        if hits:
+        if len(hits) == 1:
             return hits[0]
+        return None
 
     return None
 

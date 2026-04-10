@@ -739,3 +739,43 @@ def test_trusted_key_from_d_sidecar_still_works(tmp_path):
     assert trusted.key_id
     assert trusted.public_key_pem
     assert "trust-d-test" in trusted.comment
+
+
+# ---------------------------------------------------------------------------
+# Regression: keys_cli trust on a directory with ambiguous sidecars
+#
+# Pre-fix behavior: sorted(source.glob("*.provenance.json"))[0] silently
+# trusted whichever key happened to sort first. For a TRUST command this
+# is "too permissive" — wrong-trust grants are harder to walk back than
+# wrong-verify results.
+# Post-fix behavior: fail loudly with EXIT_KEY_ERROR and refuse to write
+# the registry.
+# ---------------------------------------------------------------------------
+
+
+def test_keys_cli_trust_directory_with_ambiguous_sidecars_fails(tmp_path):
+    """Regression: trust on a directory with multiple sidecars MUST fail
+    loudly rather than silently picking the first lexicographically.
+    """
+    from mzprov.keys_cli import main as keys_main, EXIT_KEY_ERROR
+
+    # Two sidecars in one directory. The content does not need to be
+    # valid — the rejection happens at the discovery layer, before the
+    # sidecars are even parsed. The point of this test is precisely
+    # that the discovery layer must refuse to commit to either one.
+    (tmp_path / "alpha.provenance.json").write_text("{}")
+    (tmp_path / "beta.provenance.json").write_text("{}")
+
+    reg_path = tmp_path / "trusted.json"
+    rc = keys_main([
+        "trust", str(tmp_path),
+        "--comment", "ambiguous-trust-test",
+        "--registry", str(reg_path),
+    ])
+
+    assert rc == EXIT_KEY_ERROR
+    # The registry MUST NOT have been written: trust on an ambiguous
+    # directory must be a no-op, not a partial-grant.
+    assert not reg_path.is_file(), (
+        "trust on an ambiguous directory wrote the registry anyway"
+    )

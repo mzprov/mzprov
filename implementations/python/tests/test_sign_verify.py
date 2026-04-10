@@ -537,3 +537,154 @@ def test_find_sidecar_for_mzml_returns_none_on_ambiguous_siblings(tmp_path):
     (tmp_path / "beta.provenance.json").write_text("{}")
 
     assert find_sidecar_for(mzml) is None
+
+
+def test_find_sidecar_for_generic_directory_with_one_sidecar(tmp_path):
+    """Regression check: a generic (non-.d) directory with exactly one
+    sidecar still resolves correctly. This is the experiment-directory
+    happy path."""
+    from mzprov.verify import find_sidecar_for
+
+    (tmp_path / "lone.provenance.json").write_text("{}")
+    assert find_sidecar_for(tmp_path) == tmp_path / "lone.provenance.json"
+
+
+def test_find_sidecar_for_generic_directory_with_ambiguous_sidecars_returns_none(tmp_path):
+    """Regression: a generic directory containing multiple sidecars MUST
+    return None rather than silently picking the first lexicographically.
+
+    Pre-fix behavior: hits[0] from a sorted glob — returns alpha.
+    Post-fix behavior: requires uniqueness, returns None.
+    """
+    from mzprov.verify import find_sidecar_for
+
+    (tmp_path / "alpha.provenance.json").write_text("{}")
+    (tmp_path / "beta.provenance.json").write_text("{}")
+
+    assert find_sidecar_for(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# §1.6 — mzprov sign CLI
+#
+# The unified mzprov CLI advertises a 'sign' subcommand. Until the
+# second-pass code review, this was a stub that exited with "not yet
+# wired" — these tests exercise the wired-up implementation.
+# ---------------------------------------------------------------------------
+
+
+def test_sign_cli_d_signs_and_verifies(tmp_path):
+    """mzprov sign on a .d directory writes a sidecar that verifies."""
+    from mzprov import verify_sidecar
+    from mzprov._fixtures import make_minimal_d
+    from mzprov.sign_cli import EXIT_OK
+    from mzprov.sign_cli import main as sign_main
+
+    d_path = make_minimal_d(tmp_path, name="cli-d-test")
+    config_path = tmp_path / "cli-d-test-input.toml"
+    config_path.write_bytes(b'[experiment]\nname = "cli-d-test"\n')
+
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+
+    rc = sign_main([
+        str(d_path),
+        "--experiment-name", "cli-d-test",
+        "--config", str(config_path),
+        "--tool-version", "0.0.1",
+        "--key", str(key_dir),
+    ])
+    assert rc == EXIT_OK
+
+    sidecar = tmp_path / "cli-d-test.provenance.json"
+    assert sidecar.is_file()
+
+    result = verify_sidecar(sidecar)
+    assert result.overall_ok, (
+        f"sign_cli produced a sidecar that did not verify: "
+        f"checks={[(c.name, c.status) for c in result.checks]}"
+    )
+
+
+def test_sign_cli_mzml_signs_and_verifies(tmp_path):
+    """mzprov sign on an mzML file writes a sidecar that verifies."""
+    from mzprov import verify_sidecar
+    from mzprov._fixtures import make_minimal_mzml
+    from mzprov.sign_cli import EXIT_OK
+    from mzprov.sign_cli import main as sign_main
+
+    mzml_path = make_minimal_mzml(tmp_path, name="cli-mzml-test")
+    config_path = tmp_path / "cli-mzml-test-input.toml"
+    config_path.write_bytes(b'[experiment]\nname = "cli-mzml-test"\n')
+
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+
+    rc = sign_main([
+        str(mzml_path),
+        "--experiment-name", "cli-mzml-test",
+        "--config", str(config_path),
+        "--tool-name", "mzprov-cli-test",
+        "--tool-version", "0.0.1",
+        "--key", str(key_dir),
+    ])
+    assert rc == EXIT_OK
+
+    sidecar = tmp_path / "cli-mzml-test.provenance.json"
+    assert sidecar.is_file()
+
+    result = verify_sidecar(sidecar)
+    assert result.overall_ok, (
+        f"sign_cli mzml produced a sidecar that did not verify: "
+        f"checks={[(c.name, c.status) for c in result.checks]}"
+    )
+
+
+def test_sign_cli_d_without_config_returns_generic_error(tmp_path):
+    """Signing a .d without --config is rejected because the .d signing
+    path requires a config to bind to."""
+    from mzprov._fixtures import make_minimal_d
+    from mzprov.sign_cli import EXIT_GENERIC
+    from mzprov.sign_cli import main as sign_main
+
+    d_path = make_minimal_d(tmp_path, name="no-config")
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+
+    rc = sign_main([
+        str(d_path),
+        "--experiment-name", "no-config",
+        "--key", str(key_dir),
+    ])
+    assert rc == EXIT_GENERIC
+
+
+def test_sign_cli_neither_d_nor_mzml_returns_sidecar_error(tmp_path):
+    """Signing something that is neither a .d directory nor an mzML file
+    is rejected with SIDECAR_ERROR."""
+    from mzprov.sign_cli import EXIT_SIDECAR_ERROR
+    from mzprov.sign_cli import main as sign_main
+
+    not_a_signable = tmp_path / "random.txt"
+    not_a_signable.write_text("hello")
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+
+    rc = sign_main([
+        str(not_a_signable),
+        "--experiment-name", "test",
+        "--key", str(key_dir),
+    ])
+    assert rc == EXIT_SIDECAR_ERROR
+
+
+def test_sign_cli_nonexistent_path_returns_sidecar_error(tmp_path):
+    """Signing a path that does not exist is rejected with SIDECAR_ERROR."""
+    from mzprov.sign_cli import EXIT_SIDECAR_ERROR
+    from mzprov.sign_cli import main as sign_main
+
+    rc = sign_main([
+        str(tmp_path / "does-not-exist.d"),
+        "--experiment-name", "ghost",
+    ])
+    assert rc == EXIT_SIDECAR_ERROR

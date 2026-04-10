@@ -197,13 +197,27 @@ def _cmd_trust(args) -> int:
 
     # Decide source type by inspection.
     if source.is_dir():
-        # Directory: look for a *.provenance.json inside.
+        # Directory: look for a *.provenance.json inside. The directory
+        # MUST contain exactly one sidecar — for a trust command,
+        # picking the first lexicographically would silently grant trust
+        # to whichever key happens to sort first, which is too lax.
+        # Fail loudly and force the caller to point at a specific
+        # sidecar JSON file.
         candidates = sorted(source.glob("*.provenance.json"))
         if not candidates:
             print(
                 f"timsim-keys: no *.provenance.json found in directory {source}",
                 file=sys.stderr,
             )
+            return EXIT_KEY_ERROR
+        if len(candidates) > 1:
+            print(
+                f"timsim-keys: directory {source} contains multiple sidecars; "
+                f"refusing to guess. Specify the exact sidecar JSON file:",
+                file=sys.stderr,
+            )
+            for c in candidates:
+                print(f"  {c}", file=sys.stderr)
             return EXIT_KEY_ERROR
         try:
             entry = trusted_key_from_sidecar_file(candidates[0], comment=args.comment)

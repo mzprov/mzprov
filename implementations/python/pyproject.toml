@@ -51,6 +51,7 @@ xml-cross-validate = [
 
 [project.scripts]
 mzprov = "mzprov.main:main"
+mzprov-sign = "mzprov.sign_cli:main"
 mzprov-verify = "mzprov.cli:main"
 mzprov-keys = "mzprov.keys_cli:main"
 

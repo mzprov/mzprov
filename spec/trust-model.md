@@ -106,22 +106,25 @@ Given an input path `p`:
      is ambiguous and the verifier MUST return `None` rather than
      guess.
    - Otherwise (not a `.d` directory), glob for `*.provenance.json`
-     in `p` itself. If any match, return the first (lexicographic
-     order). This is the "experiment directory" case where the
-     directory contains both the source artifact and its single
-     sidecar.
+     in `p` itself. Return the match **only if exactly one** exists.
+     If multiple match, the discovery is ambiguous and the verifier
+     MUST return `None` rather than guess. This is the "experiment
+     directory" case: it works when the directory contains exactly
+     one signed bundle and refuses to commit otherwise.
 4. **Otherwise**, return `None`.
 
-The "exactly one" requirement on the `.d` and `.mzML` sibling
-fallbacks is what catches the multi-bundle discovery bug. A naive
+The "exactly one" requirement applies to **all** fallback branches
+(`.d` sibling, `.mzML` sibling, and generic directory). A naive
 "first match wins" implementation looks correct in single-bundle
 test setups but silently misroutes verification in any directory
 containing multiple signed datasets. Conforming implementations MUST
-implement the uniqueness check; the regression tests
+implement the uniqueness check across every branch; the regression
+tests
 `test_find_sidecar_for_d_uses_stem_based_pairing_in_multi_bundle_layout`,
-`test_find_sidecar_for_d_returns_none_on_ambiguous_siblings`, and
-`test_find_sidecar_for_mzml_returns_none_on_ambiguous_siblings` in
-`implementations/python/tests/test_sign_verify.py` exercise it.
+`test_find_sidecar_for_d_returns_none_on_ambiguous_siblings`,
+`test_find_sidecar_for_mzml_returns_none_on_ambiguous_siblings`, and
+`test_find_sidecar_for_generic_directory_with_ambiguous_sidecars_returns_none`
+in `implementations/python/tests/test_sign_verify.py` exercise them.
 
 ### 3.2 `.d` source location
 
