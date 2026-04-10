@@ -262,3 +262,47 @@ indefinitely so existing sidecars stay verifiable.
 
 This is recorded in the migration plan as a deferred concern, not a
 shipping bug.
+
+---
+
+## Why does discovery refuse to guess on ambiguity?
+
+When the verifier or trust layer is given a path that could resolve
+to more than one sidecar — multiple `.d` bundles in a shared parent
+directory, multiple `*.provenance.json` siblings of an mzML, or
+multiple sidecars in an experiment directory — it MUST return
+`None` (verify) or fail loudly (trust). It MUST NOT silently pick
+the first match lexicographically. This is a stated design
+principle, not a temporary limitation.
+
+The reasoning is asymmetric:
+
+- **Cost of being too strict:** the user gets a clear error and
+  learns to specify the file explicitly. Annoying.
+- **Cost of being too convenient:** the verifier silently routes to
+  the wrong artifact and reports `VERIFIED` for a sidecar that does
+  not correspond to the data the user thought they were verifying.
+  This is a security bug.
+
+The first failure mode is recoverable. The second is not.
+
+Conforming implementations MUST follow the same rule. Any future
+proposal to make discovery "more convenient" by guessing — picking
+the first sidecar lexicographically, picking the most recently
+modified, picking based on filename similarity, falling back to a
+search up the directory tree — should be rejected. The right
+answer is always "ask the caller to disambiguate by passing the
+explicit sidecar JSON path".
+
+This principle was crystallized after a multi-pass code review of
+the lifted Python implementation found four independent first-wins
+discovery bugs (`verify.py`'s `.d` branch, mzML branch, generic
+directory branch, and `keys_cli.py`'s trust-by-directory branch),
+all of which had passed the test suite because the suite only
+exercised the single-bundle happy path. The lesson is durable:
+never reintroduce the convenience path. The corresponding
+regression tests under
+[`../implementations/python/tests/test_sign_verify.py`](../implementations/python/tests/test_sign_verify.py)
+and
+[`../implementations/python/tests/test_trust.py`](../implementations/python/tests/test_trust.py)
+exist precisely to catch any reintroduction.

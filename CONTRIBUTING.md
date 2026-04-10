@@ -77,3 +77,36 @@ until the spec graduates from `v1-draft/`.
 
 Decisions are documented in commit messages and in `docs/` files. There is
 no separate steering committee in v0.
+
+## Maintainer note: the .d/mzML symmetry
+
+The Bruker `.d` and mzML attestation paths are designed as **parallel**
+attestation types. The `.d` path carries more special-case logic
+(directory of multiple files, embedded SQLite, ground-truth DB, SQLite
+quiescence checks) but the trust model, the discovery rules, and the
+error-to-exit-code mapping are intended to be **symmetric** across both.
+
+Any PR that touches discovery, trust, error mapping, or any other
+behavior with both a `.d` and an mzML implementation MUST consider both
+paths together. Specifically:
+
+- If you change `find_sidecar_for()`, check both the `.d` directory
+  branch and the `.mzML` file branch.
+- If you change a MUST/SHOULD claim in
+  [`spec/trust-model.md`](spec/trust-model.md) or
+  [`spec/sidecar-format.md`](spec/sidecar-format.md), check whether
+  it applies symmetrically to both attestation types.
+- If you add a new exit code or change how an exception maps to an
+  exit code, check that the mapping is the same on both paths.
+- If you tighten or loosen a check on one path, ask whether the
+  other path needs the same change.
+
+The asymmetry between the two paths is **justified** (they are
+genuinely different file formats) but it is a maintenance liability:
+inconsistencies are easy to introduce and easy to miss in review. The
+first-wins discovery bugs caught in the 2026-04 review passes were
+exactly this class of mistake — fixes were applied to one branch
+first, and the other branches had to be flagged in follow-up review
+passes. See [`docs/faq.md`](docs/faq.md) ("Why does discovery refuse
+to guess on ambiguity?") for the underlying design principle this
+checklist is meant to protect.
