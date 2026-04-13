@@ -143,6 +143,26 @@ pub fn load_private_key(path: &Path) -> Result<SigningKey> {
     })
 }
 
+/// Encode a verifying key as a SubjectPublicKeyInfo PEM string (LF newlines).
+pub fn public_key_to_pem(public_key: &VerifyingKey) -> Result<String> {
+    public_key
+        .to_public_key_pem(LineEnding::LF)
+        .map_err(|e| ProvenanceError::MalformedKey(format!("encode SPKI PEM: {e}")))
+}
+
+/// Decode a SubjectPublicKeyInfo PEM string into an `Ed25519` verifying key.
+pub fn public_key_from_pem(text: &str) -> Result<VerifyingKey> {
+    let pem_obj = pem::parse(text)
+        .map_err(|e| ProvenanceError::MalformedKey(format!("not a PEM string: {e}")))?;
+    if pem_obj.tag() != "PUBLIC KEY" {
+        return Err(ProvenanceError::MalformedKey(format!(
+            "expected 'PUBLIC KEY' PEM armor, got {:?}",
+            pem_obj.tag()
+        )));
+    }
+    verifying_key_from_spki(pem_obj.contents())
+}
+
 /// Encode a verifying key as the `ed25519:base64:...` envelope used in sidecars.
 pub fn public_key_to_b64(public_key: &VerifyingKey) -> String {
     format!(

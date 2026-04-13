@@ -17,7 +17,11 @@ use crate::envelope::{
     decode_hash_field, encode_hash_field, AttestationType, Sidecar,
 };
 use crate::errors::{ProvenanceError, Result};
-use crate::keys::{derive_key_id, public_key_from_b64, signature_from_b64, verify_signature};
+use crate::keys::{
+    derive_key_id, pubkeys_equal, public_key_from_b64, signature_from_b64, verify_signature,
+};
+use crate::trust::TrustedKeyRegistry;
+use ed25519_dalek::VerifyingKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckStatus {
@@ -35,6 +39,51 @@ pub struct FieldCheck {
     pub detail: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrustStatus {
+    /// No trust pin was requested.
+    NotRequested,
+    /// All requested pins were satisfied.
+    Ok,
+    /// `--expected-key-id` was given but the signer's derived key id differs.
+    IdMismatch,
+    /// `--require-trusted` was given but the signer is not in the registry.
+    NotInRegistry,
+    /// `--require-trusted` was given, the key_id is in the registry, but the
+    /// registered PEM differs from the embedded verifying_key — catches both
+    /// an 80-bit key_id collision and a forgery that reuses a trusted id.
+    RegistryPemMismatch,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrustCheck {
+    pub status: TrustStatus,
+    pub detail: String,
+    pub expected_key_id: String,
+    pub actual_key_id: String,
+}
+
+impl TrustCheck {
+    pub fn ok(&self) -> bool {
+        matches!(self.status, TrustStatus::Ok | TrustStatus::NotRequested)
+    }
+    pub fn was_requested(&self) -> bool {
+        !matches!(self.status, TrustStatus::NotRequested)
+    }
+}
+
+/// Options controlling the optional trust-pinning layer of verification.
+#[derive(Debug, Clone, Default)]
+pub struct TrustOptions {
+    /// Require the signer's derived key id to equal this string.
+    pub expected_key_id: Option<String>,
+    /// Require the signing key to be present in the trusted-keys registry
+    /// AND match byte-for-byte.
+    pub require_trusted: bool,
+    /// Override the default `~/.config/timsim/trusted_keys.json` path.
+    pub trusted_registry_path: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone)]
 pub struct VerificationResult {
     pub sidecar_path: PathBuf,
@@ -43,6 +92,7 @@ pub struct VerificationResult {
     pub overall_ok: bool,
     pub checks: Vec<FieldCheck>,
     pub derived_key_id: String,
+    pub trust: TrustCheck,
 }
 
 impl VerificationResult {
@@ -130,10 +180,18 @@ fn config_path_for_sidecar(sidecar_path: &Path) -> Option<PathBuf> {
     Some(sidecar_path.parent()?.join(format!("{stem}.config.toml")))
 }
 
-/// Verify a sidecar. Returns an error for structural problems (missing
-/// sidecar, malformed JSON, unknown type, missing artifact). Hash and
-/// signature mismatches are reported as `FieldCheck` entries.
+/// Verify a sidecar without any trust pinning.
 pub fn verify_sidecar(sidecar_path: &Path) -> Result<VerificationResult> {
+    verify_sidecar_with(sidecar_path, &TrustOptions::default())
+}
+
+/// Verify a sidecar. Returns an error for structural problems (missing
+/// sidecar, malformed JSON, unknown type, missing artifact). Hash,
+/// signature, and trust mismatches surface as fields on the result.
+pub fn verify_sidecar_with(
+    sidecar_path: &Path,
+    trust_opts: &TrustOptions,
+) -> Result<VerificationResult> {
     if !sidecar_path.is_file() {
         return Err(ProvenanceError::MalformedSidecar(format!(
             "sidecar file does not exist: {}",
@@ -174,7 +232,10 @@ pub fn verify_sidecar(sidecar_path: &Path) -> Result<VerificationResult> {
     }
 
     let all_fields_ok = checks.iter().all(|c| c.status == CheckStatus::Ok);
-    let overall_ok = signature_ok && all_fields_ok;
+
+    let trust = evaluate_trust(&derived_key_id, &pubkey, trust_opts);
+
+    let overall_ok = signature_ok && all_fields_ok && trust.ok();
 
     Ok(VerificationResult {
         sidecar_path: sidecar_path.to_path_buf(),
@@ -183,7 +244,94 @@ pub fn verify_sidecar(sidecar_path: &Path) -> Result<VerificationResult> {
         overall_ok,
         checks,
         derived_key_id,
+        trust,
     })
+}
+
+fn evaluate_trust(
+    actual_key_id: &str,
+    actual_pubkey: &VerifyingKey,
+    opts: &TrustOptions,
+) -> TrustCheck {
+    if opts.expected_key_id.is_none() && !opts.require_trusted {
+        return TrustCheck {
+            status: TrustStatus::NotRequested,
+            detail: String::new(),
+            expected_key_id: String::new(),
+            actual_key_id: actual_key_id.to_owned(),
+        };
+    }
+
+    if let Some(expected) = &opts.expected_key_id {
+        if expected != actual_key_id {
+            return TrustCheck {
+                status: TrustStatus::IdMismatch,
+                detail: format!(
+                    "sidecar was signed by {actual_key_id:?} but caller expected {expected:?}"
+                ),
+                expected_key_id: expected.clone(),
+                actual_key_id: actual_key_id.to_owned(),
+            };
+        }
+    }
+
+    if opts.require_trusted {
+        let registry = match TrustedKeyRegistry::load(opts.trusted_registry_path.as_deref()) {
+            Ok(r) => r,
+            Err(e) => {
+                return TrustCheck {
+                    status: TrustStatus::NotInRegistry,
+                    detail: format!("trusted-keys registry is malformed: {e}"),
+                    expected_key_id: opts.expected_key_id.clone().unwrap_or_default(),
+                    actual_key_id: actual_key_id.to_owned(),
+                };
+            }
+        };
+        let entry = match registry.find(actual_key_id) {
+            Some(e) => e,
+            None => {
+                return TrustCheck {
+                    status: TrustStatus::NotInRegistry,
+                    detail: format!(
+                        "key {actual_key_id:?} is not in the trusted-keys registry at {}. \
+                         Add it with 'mzprov keys trust ...' if you trust this signer.",
+                        registry.path.display()
+                    ),
+                    expected_key_id: opts.expected_key_id.clone().unwrap_or_default(),
+                    actual_key_id: actual_key_id.to_owned(),
+                };
+            }
+        };
+        let registered = match entry.load_public_key() {
+            Ok(k) => k,
+            Err(e) => {
+                return TrustCheck {
+                    status: TrustStatus::RegistryPemMismatch,
+                    detail: format!("could not load registered PEM: {e}"),
+                    expected_key_id: opts.expected_key_id.clone().unwrap_or_default(),
+                    actual_key_id: actual_key_id.to_owned(),
+                };
+            }
+        };
+        if !pubkeys_equal(actual_pubkey, &registered) {
+            return TrustCheck {
+                status: TrustStatus::RegistryPemMismatch,
+                detail: format!(
+                    "sidecar's key id {actual_key_id:?} is trusted but its public key bytes \
+                     differ from the registered PEM; consistent with a key_id collision or forgery"
+                ),
+                expected_key_id: opts.expected_key_id.clone().unwrap_or_default(),
+                actual_key_id: actual_key_id.to_owned(),
+            };
+        }
+    }
+
+    TrustCheck {
+        status: TrustStatus::Ok,
+        detail: String::new(),
+        expected_key_id: opts.expected_key_id.clone().unwrap_or_default(),
+        actual_key_id: actual_key_id.to_owned(),
+    }
 }
 
 fn push_check(

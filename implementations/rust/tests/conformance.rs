@@ -11,14 +11,17 @@ use mzprov::canonicalize_mzml::canonicalize_mzml;
 use mzprov::envelope::encode_hash_field;
 use mzprov::errors::ProvenanceError;
 use mzprov::exit_codes::{
-    EXIT_GENERIC, EXIT_HASH_MISMATCH, EXIT_KEY_ERROR, EXIT_OK, EXIT_SIDECAR_ERROR,
-    EXIT_SIGNATURE_MISMATCH,
+    EXIT_GENERIC, EXIT_HASH_MISMATCH, EXIT_KEY_ERROR, EXIT_KEY_NOT_TRUSTED, EXIT_OK,
+    EXIT_SIDECAR_ERROR, EXIT_SIGNATURE_MISMATCH,
 };
 use mzprov::keys::{
     derive_key_id, generate_keypair, load_private_key, load_public_key, write_keypair,
 };
 use mzprov::sign::{sign_d, sign_mzml};
-use mzprov::verify::{verify_sidecar, CheckStatus};
+use mzprov::trust::{TrustedKey, TrustedKeyRegistry};
+use mzprov::verify::{
+    verify_sidecar, verify_sidecar_with, CheckStatus, TrustOptions, TrustStatus,
+};
 
 fn vectors_root() -> PathBuf {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -30,6 +33,8 @@ fn map_to_exit(result: Result<mzprov::verify::VerificationResult, ProvenanceErro
         Ok(r) => {
             if r.overall_ok {
                 EXIT_OK
+            } else if !r.trust.ok() {
+                EXIT_KEY_NOT_TRUSTED
             } else if r.any_mismatch() {
                 EXIT_HASH_MISMATCH
             } else if !r.signature_ok {
@@ -189,6 +194,145 @@ fn round_trip_sign_then_verify_mzml() {
     assert!(r.overall_ok, "round-trip mzml sidecar must verify");
     assert!(r.signature_ok);
     assert_eq!(r.derived_key_id, keypair.key_id);
+}
+
+#[test]
+fn expected_key_id_matches() {
+    let sidecar = vectors_root().join("sidecar/valid/d-v0-minimal/d-v0-minimal.provenance.json");
+    let opts = TrustOptions {
+        expected_key_id: Some("timsim-local-umdyuiienlum7prj".into()),
+        ..TrustOptions::default()
+    };
+    let r = verify_sidecar_with(&sidecar, &opts).unwrap();
+    assert!(r.overall_ok);
+    assert_eq!(r.trust.status, TrustStatus::Ok);
+}
+
+#[test]
+fn expected_key_id_mismatch_fails_with_exit_seven() {
+    let sidecar = vectors_root().join("sidecar/valid/d-v0-minimal/d-v0-minimal.provenance.json");
+    let opts = TrustOptions {
+        expected_key_id: Some("timsim-local-wrongkeyid12345".into()),
+        ..TrustOptions::default()
+    };
+    let r = verify_sidecar_with(&sidecar, &opts).unwrap();
+    assert!(!r.overall_ok);
+    assert_eq!(r.trust.status, TrustStatus::IdMismatch);
+    assert_eq!(map_to_exit(Ok(r)), EXIT_KEY_NOT_TRUSTED);
+}
+
+#[test]
+fn require_trusted_rejects_empty_registry() {
+    let tmp = tempdir();
+    let registry = tmp.join("trusted_keys.json");
+    let sidecar = vectors_root().join("sidecar/valid/d-v0-minimal/d-v0-minimal.provenance.json");
+    let opts = TrustOptions {
+        require_trusted: true,
+        trusted_registry_path: Some(registry),
+        ..TrustOptions::default()
+    };
+    let r = verify_sidecar_with(&sidecar, &opts).unwrap();
+    assert!(!r.overall_ok);
+    assert_eq!(r.trust.status, TrustStatus::NotInRegistry);
+    assert_eq!(map_to_exit(Ok(r)), EXIT_KEY_NOT_TRUSTED);
+}
+
+#[test]
+fn require_trusted_accepts_registered_key() {
+    let tmp = tempdir();
+    let registry_path = tmp.join("trusted_keys.json");
+
+    // Seed the registry with the test-only key.
+    let pem = std::fs::read_to_string(
+        vectors_root().join("keys/test-only-keypair-001/verifying_key.pem"),
+    )
+    .unwrap();
+    let mut reg = TrustedKeyRegistry {
+        path: registry_path.clone(),
+        keys: Vec::new(),
+    };
+    let vk = mzprov::keys::public_key_from_pem(&pem).unwrap();
+    reg.add(TrustedKey::from_public_key(&vk, "test seed", Some("2026-04-13T00:00:00.000Z"))
+        .unwrap())
+        .unwrap();
+    reg.save().unwrap();
+
+    let sidecar = vectors_root().join("sidecar/valid/d-v0-minimal/d-v0-minimal.provenance.json");
+    let opts = TrustOptions {
+        require_trusted: true,
+        trusted_registry_path: Some(registry_path),
+        ..TrustOptions::default()
+    };
+    let r = verify_sidecar_with(&sidecar, &opts).unwrap();
+    assert!(r.overall_ok);
+    assert_eq!(r.trust.status, TrustStatus::Ok);
+}
+
+#[test]
+fn require_trusted_detects_pem_mismatch_under_same_key_id() {
+    // Craft a registry entry whose key_id matches the signer's derived id
+    // but whose stored PEM is a different key. Since key_id is a 80-bit
+    // digest, this is the "collision-or-forgery" defense path: the check
+    // compares raw PEMs byte-for-byte, not just the ids.
+    let tmp = tempdir();
+    let registry_path = tmp.join("trusted_keys.json");
+
+    let other_kp = mzprov::keys::generate_keypair().unwrap();
+    let other_pem = mzprov::keys::public_key_to_pem(&other_kp.verifying_key).unwrap();
+
+    // Key id of the actual signer of the valid vector.
+    let signer_key_id = "timsim-local-umdyuiienlum7prj".to_string();
+    let spoofed = TrustedKey {
+        key_id: signer_key_id,
+        public_key_pem: other_pem,
+        comment: "spoofed".into(),
+        added_at: "2026-04-13T00:00:00.000Z".into(),
+    };
+    let reg = TrustedKeyRegistry {
+        path: registry_path.clone(),
+        keys: vec![spoofed],
+    };
+    reg.save().unwrap();
+
+    let sidecar = vectors_root().join("sidecar/valid/d-v0-minimal/d-v0-minimal.provenance.json");
+    let opts = TrustOptions {
+        require_trusted: true,
+        trusted_registry_path: Some(registry_path),
+        ..TrustOptions::default()
+    };
+    let r = verify_sidecar_with(&sidecar, &opts).unwrap();
+    assert!(!r.overall_ok);
+    assert_eq!(r.trust.status, TrustStatus::RegistryPemMismatch);
+    assert_eq!(map_to_exit(Ok(r)), EXIT_KEY_NOT_TRUSTED);
+}
+
+#[test]
+fn registry_add_remove_round_trip() {
+    let tmp = tempdir();
+    let registry_path = tmp.join("trusted_keys.json");
+    let kp = mzprov::keys::generate_keypair().unwrap();
+    let entry =
+        TrustedKey::from_public_key(&kp.verifying_key, "demo", Some("2026-04-13T00:00:00.000Z"))
+            .unwrap();
+
+    let mut reg = TrustedKeyRegistry {
+        path: registry_path.clone(),
+        keys: Vec::new(),
+    };
+    reg.add(entry.clone()).unwrap();
+    // Idempotent: adding the same PEM under the same key_id is a no-op.
+    reg.add(entry.clone()).unwrap();
+    assert_eq!(reg.keys.len(), 1);
+    reg.save().unwrap();
+
+    let reloaded = TrustedKeyRegistry::load(Some(&registry_path)).unwrap();
+    assert_eq!(reloaded.keys.len(), 1);
+    assert_eq!(reloaded.keys[0].key_id, kp.key_id);
+
+    let mut reg2 = reloaded;
+    assert!(reg2.remove(&kp.key_id));
+    assert!(!reg2.remove(&kp.key_id));
+    assert!(reg2.keys.is_empty());
 }
 
 fn tempdir() -> PathBuf {

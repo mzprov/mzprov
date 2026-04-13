@@ -30,7 +30,8 @@ verifies under both the Rust and Python verifiers.
 | Key generation (`mzprov keys generate`) | implemented |
 | Signer (`mzprov sign` for `.d` and mzML) | implemented |
 | Verifier (`mzprov verify`) | implemented |
-| Trust pinning (`--expected-key-id`, `--require-trusted`) | not yet |
+| Trust pinning (`--expected-key-id`, `--require-trusted`) | implemented |
+| Trusted-keys registry (`keys trust` / `keys untrust` / `keys list`) | implemented |
 | numpress mzML arrays | not yet (spec leaves this to v1) |
 
 ## Build and test
@@ -48,6 +49,14 @@ cargo run -- sign /tmp/sample.mzML \
     --experiment-name demo \
     --tool-name my-tool --tool-version 0.1 \
     --key /tmp/keys/signing_key.pem
+
+# Trust-pin verification (ad-hoc)
+cargo run -- verify /tmp/sample.provenance.json \
+    --expected-key-id "$(cat /tmp/keys/key_id)"
+
+# Populate the trusted-keys registry and require membership
+cargo run -- keys trust /tmp/keys/verifying_key.pem --comment "my lab"
+cargo run -- verify /tmp/sample.provenance.json --require-trusted
 ```
 
 Exit codes follow [`../../spec/trust-model.md`](../../spec/trust-model.md)
@@ -67,8 +76,9 @@ src/
   canonicalize_d.rs     Bruker .d canonical content hash
   canonicalize_mzml.rs  mzML canonical content hash
   sign.rs               build payload, sign, write envelope atomically
+  trust.rs              trusted-keys registry + TrustedKey helpers
   verify.rs             verifier, discovery rules, trust-model exit map
-  bin/mzprov.rs         CLI (verify, sign, keys generate)
+  bin/mzprov.rs         CLI (verify, sign, keys generate|trust|untrust|list)
 tests/
   conformance.rs        runs against ../../test-vectors/
 ```

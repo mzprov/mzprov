@@ -10,12 +10,17 @@ use clap::{Parser, Subcommand};
 use mzprov::envelope::AttestationType;
 use mzprov::errors::ProvenanceError;
 use mzprov::exit_codes::{
-    EXIT_GENERIC, EXIT_HASH_MISMATCH, EXIT_KEY_ERROR, EXIT_OK, EXIT_SIDECAR_ERROR,
-    EXIT_SIGNATURE_MISMATCH, EXIT_UNSIGNED,
+    EXIT_GENERIC, EXIT_HASH_MISMATCH, EXIT_KEY_ERROR, EXIT_KEY_NOT_TRUSTED, EXIT_OK,
+    EXIT_SIDECAR_ERROR, EXIT_SIGNATURE_MISMATCH, EXIT_UNSIGNED,
 };
 use mzprov::keys::{generate_keypair, load_private_key, write_keypair};
 use mzprov::sign::{sign_d, sign_mzml};
-use mzprov::verify::{find_sidecar_for, verify_sidecar, CheckStatus};
+use mzprov::trust::{
+    trusted_key_from_pem_file, trusted_key_from_sidecar_file, TrustedKeyRegistry,
+};
+use mzprov::verify::{
+    find_sidecar_for, verify_sidecar_with, CheckStatus, TrustOptions, TrustStatus,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "mzprov", version, about = "mzprov v0 (Rust)")]
@@ -34,6 +39,15 @@ enum Cmd {
         /// Treat "unsigned" (no sidecar found) as a failure.
         #[arg(long)]
         strict: bool,
+        /// Require the signing key id to equal this string.
+        #[arg(long)]
+        expected_key_id: Option<String>,
+        /// Require the signing key to be in the trusted-keys registry.
+        #[arg(long)]
+        require_trusted: bool,
+        /// Override the trusted-keys registry path.
+        #[arg(long)]
+        trust_registry: Option<PathBuf>,
     },
     /// Sign a `.d` directory or an mzML file.
     Sign {
@@ -81,12 +95,51 @@ enum KeysCmd {
         #[arg(long)]
         no_overwrite: bool,
     },
+    /// Add a key to the trusted-keys registry.
+    Trust {
+        /// Path to a PEM public key OR an existing `.provenance.json` sidecar.
+        source: PathBuf,
+        /// Free-form note recorded with the entry.
+        #[arg(long, default_value = "")]
+        comment: String,
+        /// Override the trusted-keys registry path.
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
+    /// Remove a key from the trusted-keys registry.
+    Untrust {
+        /// The key id to remove (e.g. `timsim-local-...`).
+        key_id: String,
+        /// Override the trusted-keys registry path.
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
+    /// List keys in the trusted-keys registry.
+    List {
+        /// Override the trusted-keys registry path.
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
     let code = match cli.command {
-        Cmd::Verify { path, strict } => run_verify(&path, strict),
+        Cmd::Verify {
+            path,
+            strict,
+            expected_key_id,
+            require_trusted,
+            trust_registry,
+        } => run_verify(
+            &path,
+            strict,
+            TrustOptions {
+                expected_key_id,
+                require_trusted,
+                trusted_registry_path: trust_registry,
+            },
+        ),
         Cmd::Sign {
             path,
             experiment_name,
@@ -108,13 +161,21 @@ fn main() {
         ),
         Cmd::Keys { cmd } => match cmd {
             KeysCmd::Generate { out, no_overwrite } => run_keys_generate(&out, no_overwrite),
+            KeysCmd::Trust {
+                source,
+                comment,
+                registry,
+            } => run_keys_trust(&source, &comment, registry.as_deref()),
+            KeysCmd::Untrust { key_id, registry } => {
+                run_keys_untrust(&key_id, registry.as_deref())
+            }
+            KeysCmd::List { registry } => run_keys_list(registry.as_deref()),
         },
     };
     std::process::exit(code);
 }
 
-fn run_verify(path: &std::path::Path, strict: bool) -> i32 {
-    let _ = strict;
+fn run_verify(path: &std::path::Path, _strict: bool, trust_opts: TrustOptions) -> i32 {
     let sidecar_path = match find_sidecar_for(path) {
         Some(p) => p,
         None => {
@@ -123,7 +184,7 @@ fn run_verify(path: &std::path::Path, strict: bool) -> i32 {
         }
     };
 
-    match verify_sidecar(&sidecar_path) {
+    match verify_sidecar_with(&sidecar_path, &trust_opts) {
         Ok(result) => {
             let type_str = match result.type_tag {
                 AttestationType::D => "d",
@@ -150,10 +211,27 @@ fn run_verify(path: &std::path::Path, strict: bool) -> i32 {
                 "signature:  {}",
                 if result.signature_ok { "OK" } else { "MISMATCH" }
             );
+            if result.trust.was_requested() {
+                let label = match result.trust.status {
+                    TrustStatus::Ok => "TRUSTED",
+                    TrustStatus::IdMismatch => "KEY_ID_MISMATCH",
+                    TrustStatus::NotInRegistry => "NOT_IN_REGISTRY",
+                    TrustStatus::RegistryPemMismatch => "REGISTRY_PEM_MISMATCH",
+                    TrustStatus::NotRequested => unreachable!(),
+                };
+                println!("trust:      {}", label);
+                if !result.trust.detail.is_empty() {
+                    println!("    ({})", result.trust.detail);
+                }
+            }
 
             if result.overall_ok {
                 println!("result:     VERIFIED");
                 return EXIT_OK;
+            }
+            if !result.trust.ok() {
+                println!("result:     TRUST NOT SATISFIED");
+                return EXIT_KEY_NOT_TRUSTED;
             }
             if result.any_mismatch() {
                 println!("result:     HASH MISMATCH");
@@ -259,6 +337,72 @@ fn run_keys_generate(out: &std::path::Path, no_overwrite: bool) -> i32 {
     println!("key_id:       {}", gen.key_id);
     println!("signing_key:  {}", out.join("signing_key.pem").display());
     println!("verifying_key: {}", out.join("verifying_key.pem").display());
+    EXIT_OK
+}
+
+fn run_keys_trust(source: &std::path::Path, comment: &str, registry: Option<&std::path::Path>) -> i32 {
+    let key = if source.is_file()
+        && source
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n.ends_with(".provenance.json"))
+            .unwrap_or(false)
+    {
+        match trusted_key_from_sidecar_file(source, comment) {
+            Ok(k) => k,
+            Err(e) => return provenance_error_to_exit(&e),
+        }
+    } else {
+        match trusted_key_from_pem_file(source, comment) {
+            Ok(k) => k,
+            Err(e) => return provenance_error_to_exit(&e),
+        }
+    };
+
+    let mut reg = match TrustedKeyRegistry::load(registry) {
+        Ok(r) => r,
+        Err(e) => return provenance_error_to_exit(&e),
+    };
+    if let Err(e) = reg.add(key.clone()) {
+        return provenance_error_to_exit(&e);
+    }
+    if let Err(e) = reg.save() {
+        return provenance_error_to_exit(&e);
+    }
+    println!("trusted:  {}", key.key_id);
+    println!("registry: {}", reg.path.display());
+    EXIT_OK
+}
+
+fn run_keys_untrust(key_id: &str, registry: Option<&std::path::Path>) -> i32 {
+    let mut reg = match TrustedKeyRegistry::load(registry) {
+        Ok(r) => r,
+        Err(e) => return provenance_error_to_exit(&e),
+    };
+    if !reg.remove(key_id) {
+        eprintln!("mzprov keys untrust: no such key_id in registry: {key_id}");
+        return EXIT_GENERIC;
+    }
+    if let Err(e) = reg.save() {
+        return provenance_error_to_exit(&e);
+    }
+    println!("untrusted: {}", key_id);
+    EXIT_OK
+}
+
+fn run_keys_list(registry: Option<&std::path::Path>) -> i32 {
+    let reg = match TrustedKeyRegistry::load(registry) {
+        Ok(r) => r,
+        Err(e) => return provenance_error_to_exit(&e),
+    };
+    if reg.keys.is_empty() {
+        println!("(no trusted keys in {})", reg.path.display());
+        return EXIT_OK;
+    }
+    println!("registry: {}", reg.path.display());
+    for k in &reg.keys {
+        println!("  {}  {}  {}", k.key_id, k.added_at, k.comment);
+    }
     EXIT_OK
 }
 

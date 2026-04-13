@@ -242,7 +242,7 @@ fn write_sidecar(
     write_atomic(sidecar_path, &pretty)
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let mut tmp = path.as_os_str().to_os_string();
@@ -259,7 +259,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn utc_now_iso() -> String {
+pub(crate) fn utc_now_iso() -> String {
     // "YYYY-MM-DDTHH:MM:SS.fffZ" — matches the Python reference exactly.
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let total_secs = now.as_secs() as i64;

@@ -20,6 +20,7 @@ pub mod errors;
 pub mod exit_codes;
 pub mod keys;
 pub mod sign;
+pub mod trust;
 pub mod verify;
 
 pub use errors::ProvenanceError;
