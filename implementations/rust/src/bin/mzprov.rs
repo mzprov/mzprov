@@ -1,0 +1,277 @@
+//! `mzprov` CLI: verify, sign, and generate keys.
+//!
+//! Exit codes follow `spec/trust-model.md`: 0 OK, 1 generic, 2 key error,
+//! 3 sidecar error, 4 unsigned, 5 hash mismatch, 6 signature mismatch,
+//! 7 key not trusted.
+
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
+use mzprov::envelope::AttestationType;
+use mzprov::errors::ProvenanceError;
+use mzprov::exit_codes::{
+    EXIT_GENERIC, EXIT_HASH_MISMATCH, EXIT_KEY_ERROR, EXIT_OK, EXIT_SIDECAR_ERROR,
+    EXIT_SIGNATURE_MISMATCH, EXIT_UNSIGNED,
+};
+use mzprov::keys::{generate_keypair, load_private_key, write_keypair};
+use mzprov::sign::{sign_d, sign_mzml};
+use mzprov::verify::{find_sidecar_for, verify_sidecar, CheckStatus};
+
+#[derive(Parser, Debug)]
+#[command(name = "mzprov", version, about = "mzprov v0 (Rust)")]
+struct Cli {
+    #[command(subcommand)]
+    command: Cmd,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// Verify a provenance sidecar (or a `.d` / mzML / experiment dir).
+    Verify {
+        /// Path to a sidecar, a .d directory, an mzML file, or a directory
+        /// containing one of those.
+        path: PathBuf,
+        /// Treat "unsigned" (no sidecar found) as a failure.
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Sign a `.d` directory or an mzML file.
+    Sign {
+        /// Input: a `.d` directory or an `.mzML` file.
+        path: PathBuf,
+        /// Free-form label recorded in the signed payload.
+        #[arg(long)]
+        experiment_name: String,
+        /// Config file whose bytes are bound to the signature. REQUIRED
+        /// for `.d`; OPTIONAL for mzML (defaults to sha256(b"")).
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Optional ground-truth SQLite DB (`.d` only).
+        #[arg(long)]
+        ground_truth: Option<PathBuf>,
+        /// Producing-tool name (simulator_name for .d, tool_name for mzML).
+        #[arg(long, default_value = "mzprov")]
+        tool_name: String,
+        /// Producing-tool version.
+        #[arg(long, default_value = "unknown")]
+        tool_version: String,
+        /// Path to an Ed25519 PKCS#8 PEM private key.
+        #[arg(long)]
+        key: PathBuf,
+        /// Override the sidecar output path.
+        #[arg(long)]
+        sidecar: Option<PathBuf>,
+    },
+    /// Key management.
+    Keys {
+        #[command(subcommand)]
+        cmd: KeysCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum KeysCmd {
+    /// Generate a fresh Ed25519 keypair. Writes `signing_key.pem`,
+    /// `verifying_key.pem`, and `key_id` to the target directory.
+    Generate {
+        /// Directory to write the keypair into. Created if missing.
+        #[arg(long, default_value = "./keys")]
+        out: PathBuf,
+        /// Refuse to overwrite an existing signing_key.pem.
+        #[arg(long)]
+        no_overwrite: bool,
+    },
+}
+
+fn main() {
+    let cli = Cli::parse();
+    let code = match cli.command {
+        Cmd::Verify { path, strict } => run_verify(&path, strict),
+        Cmd::Sign {
+            path,
+            experiment_name,
+            config,
+            ground_truth,
+            tool_name,
+            tool_version,
+            key,
+            sidecar,
+        } => run_sign(
+            &path,
+            &experiment_name,
+            config.as_deref(),
+            ground_truth.as_deref(),
+            &tool_name,
+            &tool_version,
+            &key,
+            sidecar.as_deref(),
+        ),
+        Cmd::Keys { cmd } => match cmd {
+            KeysCmd::Generate { out, no_overwrite } => run_keys_generate(&out, no_overwrite),
+        },
+    };
+    std::process::exit(code);
+}
+
+fn run_verify(path: &std::path::Path, strict: bool) -> i32 {
+    let _ = strict;
+    let sidecar_path = match find_sidecar_for(path) {
+        Some(p) => p,
+        None => {
+            eprintln!("mzprov verify: no sidecar found for {}", path.display());
+            return EXIT_UNSIGNED;
+        }
+    };
+
+    match verify_sidecar(&sidecar_path) {
+        Ok(result) => {
+            let type_str = match result.type_tag {
+                AttestationType::D => "d",
+                AttestationType::Mzml => "mzml",
+            };
+            println!(
+                "sidecar:    {}\ntype:       {}\nkey_id:     {}",
+                result.sidecar_path.display(),
+                type_str,
+                result.derived_key_id
+            );
+            for c in &result.checks {
+                let label = match c.status {
+                    CheckStatus::Ok => "OK",
+                    CheckStatus::Mismatch => "MISMATCH",
+                    CheckStatus::Unchecked => "UNCHECKED",
+                };
+                println!("  {:<18} {}", c.name, label);
+                if !c.detail.is_empty() {
+                    println!("    ({})", c.detail);
+                }
+            }
+            println!(
+                "signature:  {}",
+                if result.signature_ok { "OK" } else { "MISMATCH" }
+            );
+
+            if result.overall_ok {
+                println!("result:     VERIFIED");
+                return EXIT_OK;
+            }
+            if result.any_mismatch() {
+                println!("result:     HASH MISMATCH");
+                return EXIT_HASH_MISMATCH;
+            }
+            if !result.signature_ok {
+                println!("result:     SIGNATURE MISMATCH");
+                return EXIT_SIGNATURE_MISMATCH;
+            }
+            println!("result:     FAILED");
+            EXIT_GENERIC
+        }
+        Err(e) => provenance_error_to_exit(&e),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_sign(
+    path: &std::path::Path,
+    experiment_name: &str,
+    config: Option<&std::path::Path>,
+    ground_truth: Option<&std::path::Path>,
+    tool_name: &str,
+    tool_version: &str,
+    key_path: &std::path::Path,
+    sidecar_override: Option<&std::path::Path>,
+) -> i32 {
+    let signing_key = match load_private_key(key_path) {
+        Ok(k) => k,
+        Err(e) => return provenance_error_to_exit(&e),
+    };
+
+    let is_d = path.is_dir() && path.extension().and_then(|s| s.to_str()) == Some("d");
+    let is_mzml = path.is_file()
+        && path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.eq_ignore_ascii_case("mzml"))
+            .unwrap_or(false);
+
+    let result = if is_d {
+        let config_path = match config {
+            Some(c) => c,
+            None => {
+                eprintln!(
+                    "mzprov sign: --config is required when signing a .d directory"
+                );
+                return EXIT_GENERIC;
+            }
+        };
+        sign_d(
+            path,
+            ground_truth,
+            config_path,
+            experiment_name,
+            tool_name,
+            tool_version,
+            sidecar_override,
+            &signing_key,
+        )
+    } else if is_mzml {
+        sign_mzml(
+            path,
+            config,
+            experiment_name,
+            tool_name,
+            tool_version,
+            sidecar_override,
+            &signing_key,
+        )
+    } else {
+        eprintln!(
+            "mzprov sign: {} is neither a .d directory nor an mzML file",
+            path.display()
+        );
+        return EXIT_SIDECAR_ERROR;
+    };
+
+    match result {
+        Ok(sidecar_path) => {
+            println!("signed: {}", sidecar_path.display());
+            EXIT_OK
+        }
+        Err(e) => provenance_error_to_exit(&e),
+    }
+}
+
+fn run_keys_generate(out: &std::path::Path, no_overwrite: bool) -> i32 {
+    if no_overwrite && out.join("signing_key.pem").exists() {
+        eprintln!(
+            "mzprov keys generate: refusing to overwrite existing signing key at {}",
+            out.join("signing_key.pem").display()
+        );
+        return EXIT_GENERIC;
+    }
+    let gen = match generate_keypair() {
+        Ok(g) => g,
+        Err(e) => return provenance_error_to_exit(&e),
+    };
+    if let Err(e) = write_keypair(&gen, out) {
+        return provenance_error_to_exit(&e);
+    }
+    println!("key_id:       {}", gen.key_id);
+    println!("signing_key:  {}", out.join("signing_key.pem").display());
+    println!("verifying_key: {}", out.join("verifying_key.pem").display());
+    EXIT_OK
+}
+
+fn provenance_error_to_exit(e: &ProvenanceError) -> i32 {
+    eprintln!("mzprov: {e}");
+    match e {
+        ProvenanceError::KeyNotFound(_) | ProvenanceError::MalformedKey(_) => EXIT_KEY_ERROR,
+        ProvenanceError::MalformedSidecar(_)
+        | ProvenanceError::UnknownVersion(_)
+        | ProvenanceError::UnknownAlgorithm(_)
+        | ProvenanceError::MissingArtifact(_)
+        | ProvenanceError::SqliteNotQuiescent { .. }
+        | ProvenanceError::Canonicalization(_) => EXIT_SIDECAR_ERROR,
+        ProvenanceError::Io(_) => EXIT_GENERIC,
+    }
+}

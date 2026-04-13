@@ -21,6 +21,7 @@ This repository contains:
 - Language-agnostic **test vectors** that any conforming implementation runs
   to prove interop ([`test-vectors/`](test-vectors/))
 - A Python **reference implementation** ([`implementations/python/`](implementations/python/))
+- An independent Rust implementation — signer + verifier ([`implementations/rust/`](implementations/rust/))
 - A C# implementation in development ([`implementations/csharp/`](implementations/csharp/))
 
 ## Status
@@ -286,6 +287,7 @@ mzprov/
 │
 └── implementations/
     ├── python/                       reference implementation
+    ├── rust/                         independent Rust verifier
     └── csharp/                       independent implementation
 ```
 
@@ -296,7 +298,7 @@ This repository uses three licenses, by directory:
 | Path | License | Why |
 |---|---|---|
 | `docs/`, `spec/` | CC-BY-4.0 | specifications must be quotable in papers and other specifications without legal friction |
-| `implementations/python/` | Apache-2.0 | the patent grant matters for security-adjacent code |
+| `implementations/python/`, `implementations/rust/` | Apache-2.0 | the patent grant matters for security-adjacent code |
 | `test-vectors/` | CC0 1.0 | test fixtures should have zero attribution burden so any implementation in any language can ship them |
 
 See [`LICENSE`](LICENSE) for the full breakdown.
