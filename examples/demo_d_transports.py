@@ -208,6 +208,24 @@ def demo_embedded(workdir: Path, key_path: Path) -> None:
         "--embed",
     )
     assert rc == 0, "embed sign should succeed"
+
+    # Sanity-check the actual on-disk layout so this script's
+    # narrative cannot drift from the code's behavior. The verifier's
+    # config-copy convention for embedded mode is
+    # ``{d-stem}.config.toml`` next to the .d (see verify.py's
+    # verify_embedded_d). When the user's input config is already at
+    # that path — as it is in this demo — the sign step rewrites the
+    # same file with the same bytes and no extra config-copy file
+    # appears.
+    actual_files = sorted(
+        p.relative_to(exp).as_posix() for p in exp.iterdir() if p.is_file()
+    )
+    expected_files = ["sample.config.toml"]
+    assert actual_files == expected_files, (
+        f"embedded layout drift: expected {expected_files} at the "
+        f"experiment-dir level, got {actual_files}"
+    )
+
     show_tree(exp, "\nafter signing (no new files — the envelope is inside analysis.tdf):")
 
     step("inspect: pull the embedded envelope back out with sqlite3")
@@ -296,17 +314,31 @@ def main() -> int:
         section("SIDE-BY-SIDE — what gets shipped")
         print(
             "  Transport A (sidecar JSON):\n"
-            "    * the .d directory          (the data)\n"
+            "    * the .d directory           (the data)\n"
             "    * sample.config.toml         (the original config)\n"
             "    * demo-json.provenance.json  (the attestation)\n"
-            "    * demo-json.config.toml      (config copy for the verifier)\n"
+            "    * demo-json.config.toml      (config copy for the verifier,\n"
+            "                                  named after the sidecar stem)\n"
             "    -> 4 files; recipient must keep them together.\n"
             "\n"
             "  Transport B (embedded):\n"
             "    * the .d directory           (data + attestation, in-band)\n"
-            "    * sample.config.toml         (the original config)\n"
-            "    * demo-embed.config.toml     (config copy for the verifier)\n"
-            "    -> 3 files; the .d is self-describing — no separate sidecar to lose.\n"
+            "    * sample.config.toml         (the original config; also\n"
+            "                                  serves as the config copy —\n"
+            "                                  see note below)\n"
+            "    -> 2 items; the .d is self-describing — no separate\n"
+            "       sidecar to lose.\n"
+            "\n"
+            "  Note on the embedded config copy:\n"
+            "    The verifier's expected config-copy path for an embedded .d\n"
+            "    is {d-stem}.config.toml next to the .d. In this demo the\n"
+            "    .d is sample.d, so that path is sample.config.toml — which\n"
+            "    is also where the user's input config already lives, so\n"
+            "    the sign step rewrites the same file with the same bytes\n"
+            "    and no extra file appears. If the user had named their\n"
+            "    input config something else (e.g. mysetup.toml), embedded\n"
+            "    signing would copy it to sample.config.toml, and that\n"
+            "    copy is what the verifier would check against.\n"
             "\n"
             "Both paths give an attacker the same surface and the same exit\n"
             "codes when they tamper. The choice is operational: how does the\n"

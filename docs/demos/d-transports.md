@@ -197,18 +197,30 @@ signed: experiment-embed/sample.d
 (exit 0)
 ```
 
-Resulting layout — note no new `*.provenance.json` file:
+Resulting layout — note no new files at the experiment-dir level:
 
 ```
 experiment-embed/
   sample.d/
     analysis.tdf                   # now contains a mzprov_provenance row
     analysis.tdf_bin               # unchanged
-  sample.config.toml               # the original config
-  demo-embed.config.toml           # config copy the verifier checks against
+  sample.config.toml               # the original config (and, by virtue of
+                                   #   the convention below, also the
+                                   #   verifier's config copy)
 ```
 
 The `.d/` directory now contains its own attestation in-band.
+
+> **About the embedded config copy.** The verifier expects the config
+> bytes at `{d-stem}.config.toml` next to the `.d` (here:
+> `sample.config.toml`). In this demo the user's input config is
+> already at that path, so the sign step rewrites the same file with
+> the same bytes and no extra file appears. If the user had named
+> their input config something else (e.g. `mysetup.toml`), embedded
+> signing would create `sample.config.toml` as a separate copy.
+> Either way the verifier reads from the conventional path —
+> never from a payload field — so a tampered `experiment_name` can't
+> redirect it.
 
 ### Inspect: pull the embedded envelope back out
 
@@ -303,7 +315,8 @@ key, and any mutation invalidates the signature.
 
 | | Transport A (sidecar JSON) | Transport B (embedded) |
 |---|---|---|
-| Files to hand off | `sample.d/`, `sample.config.toml`, `demo-json.provenance.json`, `demo-json.config.toml` | `sample.d/`, `sample.config.toml`, `demo-embed.config.toml` |
+| Files to hand off | `sample.d/`, `sample.config.toml`, `demo-json.provenance.json`, `demo-json.config.toml` | `sample.d/`, `sample.config.toml` |
+| Config-copy convention | `{sidecar-stem}.config.toml` — distinct from the user's input config | `{d-stem}.config.toml` — coincides with the user's input config in this demo (would be a separate file if the user named their config differently) |
 | Single self-describing artifact? | No — sidecar can be lost or separated in transit | Yes — the `.d` carries its own attestation |
 | Works for opaque single-blob formats (Thermo `.raw`, Waters) | Yes | No — requires an editable container |
 | Affected by signing? | Untouched `.d` + new sidecar files | `.d/analysis.tdf` gains one row in `mzprov_provenance` |
