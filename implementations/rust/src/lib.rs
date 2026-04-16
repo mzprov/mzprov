@@ -15,6 +15,7 @@
 
 pub mod canonicalize_d;
 pub mod canonicalize_mzml;
+pub mod embed_d;
 pub mod envelope;
 pub mod errors;
 pub mod exit_codes;

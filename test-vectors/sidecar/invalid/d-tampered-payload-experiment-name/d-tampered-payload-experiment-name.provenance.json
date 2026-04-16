@@ -16,9 +16,9 @@
     "key_id": "timsim-local-umdyuiienlum7prj",
     "simulator_name": "TimSim",
     "simulator_version": "mzprov-test-vectors/0.1.0",
-    "timestamp_utc": "2026-04-10T07:07:22.508Z"
+    "timestamp_utc": "2026-04-16T19:15:28.109Z"
   },
-  "signature": "ed25519:base64:akFFCbTpHQGWzDuyYW/IDsSzwlIz/JsIx1OTuZI/3srlF60Y2iAaQOzW+ceED30XciXy8aFEffkzbXRfe1Z7BA==",
+  "signature": "ed25519:base64:T6y0nEzPAwPk1JUTq8B0sRP+9DLjv6JQu63SGPheiTRgSrzdiVhx5IKmiEaph5RNNSejN38AMD4Urnq07NoeCw==",
   "type": "timsim.provenance.v0",
   "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
 }

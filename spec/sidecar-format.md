@@ -194,6 +194,15 @@ file, it MUST locate the sidecar according to the discovery rules in
 The discovery rules are normative because the verifier exit codes
 depend on whether discovery returned a sidecar (`UNSIGNED` if not).
 
+This section describes the **JSON transport** only. The embedded
+transport defined in [`embedded-d-v0.md`](embedded-d-v0.md) (and
+its mzML counterpart) bypasses these rules: the in-band container
+(`analysis.tdf` for `.d`) is the discovery target. A verifier MUST
+attempt the embedded transport first and fall back to the rules
+above only when the embedded reader returns no provenance. See
+[`embedded-d-v0.md`](embedded-d-v0.md) §6 for the full dispatch
+order.
+
 ## 9. Validation
 
 | Error condition | Reference exit code |

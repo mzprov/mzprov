@@ -65,50 +65,122 @@ fn expected_exit_code(sidecar_path: &Path) -> i32 {
         .expect("vector missing _metadata.expected_exit_code") as i32
 }
 
-fn for_each_sidecar(subdir: &str, mut f: impl FnMut(&Path)) {
+/// One vector subdirectory under `sidecar/valid/` or `sidecar/invalid/`.
+/// Embedded-d vectors have no JSON sidecar; their `_metadata` lives in
+/// a sibling `_metadata.json` file because the envelope is inside the
+/// .d's SQLite.
+enum VectorEntry {
+    Json {
+        sidecar: PathBuf,
+    },
+    EmbeddedD {
+        d_path: PathBuf,
+        metadata: serde_json::Value,
+    },
+}
+
+fn classify_vector(dir: &Path) -> VectorEntry {
+    let name = dir.file_name().unwrap().to_string_lossy().to_string();
+    let sidecar = dir.join(format!("{name}.provenance.json"));
+    if sidecar.is_file() {
+        return VectorEntry::Json { sidecar };
+    }
+    let d_path = dir.join(format!("{name}.d"));
+    let metadata_path = dir.join("_metadata.json");
+    if d_path.is_dir() && metadata_path.is_file() {
+        let txt = std::fs::read_to_string(&metadata_path).expect("read embedded metadata");
+        let metadata: serde_json::Value =
+            serde_json::from_str(&txt).expect("parse embedded metadata");
+        return VectorEntry::EmbeddedD { d_path, metadata };
+    }
+    panic!(
+        "vector {} has neither a JSON sidecar nor an embedded .d + _metadata.json",
+        dir.display()
+    );
+}
+
+fn for_each_vector(subdir: &str, mut f: impl FnMut(&VectorEntry)) {
     let root = vectors_root().join("sidecar").join(subdir);
     for entry in std::fs::read_dir(&root).expect("read sidecar dir").flatten() {
         let dir = entry.path();
         if !dir.is_dir() {
             continue;
         }
-        let name = dir.file_name().unwrap().to_string_lossy().to_string();
-        let sidecar = dir.join(format!("{name}.provenance.json"));
-        assert!(sidecar.is_file(), "missing sidecar: {}", sidecar.display());
-        f(&sidecar);
+        f(&classify_vector(&dir));
     }
 }
 
 #[test]
 fn valid_vectors_verify_with_exit_zero() {
-    for_each_sidecar("valid", |sidecar| {
-        let expected = expected_exit_code(sidecar);
-        let got = map_to_exit(verify_sidecar(sidecar));
-        assert_eq!(
-            got,
-            expected,
-            "vector {}: expected {expected}, got {got}",
-            sidecar.display()
-        );
+    for_each_vector("valid", |vector| match vector {
+        VectorEntry::Json { sidecar } => {
+            let expected = expected_exit_code(sidecar);
+            let got = map_to_exit(verify_sidecar(sidecar));
+            assert_eq!(
+                got,
+                expected,
+                "vector {}: expected {expected}, got {got}",
+                sidecar.display()
+            );
 
-        let r = verify_sidecar(sidecar).expect("valid vector must verify");
-        assert!(r.overall_ok, "valid vector must verify: {}", sidecar.display());
-        assert!(r.signature_ok);
-        assert!(r.checks.iter().all(|c| c.status == CheckStatus::Ok));
+            let r = verify_sidecar(sidecar).expect("valid vector must verify");
+            assert!(r.overall_ok, "valid vector must verify: {}", sidecar.display());
+            assert!(r.signature_ok);
+            assert!(r.checks.iter().all(|c| c.status == CheckStatus::Ok));
+        }
+        VectorEntry::EmbeddedD { d_path, metadata } => {
+            let expected = metadata
+                .get("expected_exit_code")
+                .and_then(|e| e.as_i64())
+                .expect("metadata missing expected_exit_code") as i32;
+            let r = mzprov::verify::verify_embedded_d(d_path, &TrustOptions::default())
+                .expect("embedded vector must read");
+            let got = if r.overall_ok { 0 } else { 1 };
+            assert_eq!(
+                got,
+                expected,
+                "embedded vector {}: expected {expected}, got {got}",
+                d_path.display()
+            );
+            assert!(r.overall_ok, "embedded vector must verify: {}", d_path.display());
+            assert!(r.signature_ok);
+            assert!(r.checks.iter().all(|c| c.status == CheckStatus::Ok));
+            assert!(matches!(r.transport, mzprov::verify::Transport::EmbeddedD));
+        }
     });
 }
 
 #[test]
 fn invalid_vectors_reject_with_declared_exit_code() {
-    for_each_sidecar("invalid", |sidecar| {
-        let expected = expected_exit_code(sidecar);
-        let got = map_to_exit(verify_sidecar(sidecar));
-        assert_eq!(
-            got,
-            expected,
-            "vector {}: expected exit {expected}, got {got}",
-            sidecar.display()
-        );
+    for_each_vector("invalid", |vector| match vector {
+        VectorEntry::Json { sidecar } => {
+            let expected = expected_exit_code(sidecar);
+            let got = map_to_exit(verify_sidecar(sidecar));
+            assert_eq!(
+                got,
+                expected,
+                "vector {}: expected exit {expected}, got {got}",
+                sidecar.display()
+            );
+        }
+        VectorEntry::EmbeddedD { d_path, metadata } => {
+            let expected = metadata
+                .get("expected_exit_code")
+                .and_then(|e| e.as_i64())
+                .expect("metadata missing expected_exit_code") as i32;
+            let r = mzprov::verify::verify_embedded_d(d_path, &TrustOptions::default());
+            let got = match r {
+                Ok(res) if res.overall_ok => 0,
+                Ok(_) => 5,
+                Err(e) => map_to_exit(Err(e)),
+            };
+            assert_eq!(
+                got,
+                expected,
+                "embedded vector {}: expected exit {expected}, got {got}",
+                d_path.display()
+            );
+        }
     });
 }
 
@@ -137,6 +209,32 @@ fn canonical_d_hash_matches_vector() {
     assert_eq!(encode_hash_field(&digest), expected);
 }
 
+/// Exclusion-correctness fixture from spec/embedded-d-v0.md §3:
+/// 002-with-mzprov-provenance.d contains a populated mzprov_provenance
+/// table and MUST hash byte-identically to 001-minimal.d (which does
+/// not). A canonicalizer that fails this is not exclusion-correct.
+#[test]
+fn canonical_d_hash_excludes_mzprov_provenance_table() {
+    let root = vectors_root().join("canonicalization/d");
+    let baseline = root.join("001-minimal.d");
+    let with_table = root.join("002-with-mzprov-provenance.d");
+
+    let h_baseline = canonicalize_d(&baseline).expect("canonicalize baseline");
+    let h_with_table = canonicalize_d(&with_table).expect("canonicalize with-table");
+
+    assert_eq!(
+        h_baseline, h_with_table,
+        "002-with-mzprov-provenance must hash identically to 001-minimal; \
+         the mzprov_provenance table must be excluded from canonicalization"
+    );
+
+    let expected = std::fs::read_to_string(root.join("002-with-mzprov-provenance.canonical-hash.txt"))
+        .expect("read expected")
+        .trim()
+        .to_owned();
+    assert_eq!(encode_hash_field(&h_with_table), expected);
+}
+
 #[test]
 fn round_trip_sign_then_verify_d() {
     let tmp = tempdir();
@@ -159,6 +257,7 @@ fn round_trip_sign_then_verify_d() {
         "0.0.1",
         None,
         &signing_key,
+        false,
     )
     .unwrap();
 
@@ -166,6 +265,47 @@ fn round_trip_sign_then_verify_d() {
     assert!(r.overall_ok, "round-trip sidecar must verify");
     assert!(r.signature_ok);
     assert_eq!(r.derived_key_id, keypair.key_id);
+}
+
+#[test]
+fn round_trip_sign_embedded_then_verify_d() {
+    let tmp = tempdir();
+    let keypair = generate_keypair().unwrap();
+    write_keypair(&keypair, &tmp.join("keys")).unwrap();
+
+    let src = vectors_root().join("canonicalization/d/001-minimal.d");
+    let dst = tmp.join("sample.d");
+    copy_dir(&src, &dst);
+    let config_path = tmp.join("sample.config.toml");
+    std::fs::write(&config_path, b"name = \"round-trip-embedded\"\n").unwrap();
+
+    let pre_hash = canonicalize_d(&dst).expect("hash before sign");
+
+    let signing_key = load_private_key(&tmp.join("keys/signing_key.pem")).unwrap();
+    let result_path = sign_d(
+        &dst,
+        None,
+        &config_path,
+        "round-trip-embedded",
+        "mzprov-rust-test",
+        "0.0.1",
+        None,
+        &signing_key,
+        true,
+    )
+    .unwrap();
+    assert_eq!(result_path, dst, "embed mode returns the .d path itself");
+
+    // Exclusion correctness on the live .d.
+    let post_hash = canonicalize_d(&dst).expect("hash after sign");
+    assert_eq!(pre_hash, post_hash, "embed must not perturb the canonical hash");
+
+    let r = mzprov::verify::verify_embedded_d(&dst, &TrustOptions::default())
+        .expect("verify embedded after sign");
+    assert!(r.overall_ok, "round-trip embedded must verify");
+    assert!(r.signature_ok);
+    assert_eq!(r.derived_key_id, keypair.key_id);
+    assert!(matches!(r.transport, mzprov::verify::Transport::EmbeddedD));
 }
 
 #[test]

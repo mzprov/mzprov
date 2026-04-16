@@ -10,6 +10,7 @@ input and produce a hash byte-identical to the expected value.
 | Fixture | Description | Invariance proven |
 |---|---|---|
 | `001-minimal.d/` | minimal Bruker-shaped .d (analysis.tdf + analysis.tdf_bin) | baseline |
+| `002-with-mzprov-provenance.d/` | identical content to 001 plus a populated `mzprov_provenance` SQLite table | exclusion-rule correctness (per `spec/embedded-d-v0.md` §3); MUST hash identically to 001-minimal |
 
 Additional invariance fixtures (page-size, VACUUM, REINDEX,
 PRAGMA user_version) will land here as the spec is written down.

@@ -31,7 +31,8 @@ from mzprov.errors import (
 )
 from mzprov.verify import (
     VerificationResult,
-    find_sidecar_for,
+    find_provenance_for,
+    verify_embedded_d,
     verify_sidecar,
 )
 
@@ -291,8 +292,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     json_mode = args.json
 
-    sidecar_path = find_sidecar_for(args.path)
-    if sidecar_path is None:
+    discovery = find_provenance_for(args.path)
+    if discovery is None:
         msg = (
             f"timsim-verify: no provenance sidecar found near {args.path}. "
             f"This file or directory is unsigned."
@@ -324,14 +325,24 @@ def main(argv: list[str] | None = None) -> int:
             print("UNSIGNED")
         return EXIT_OK
 
+    transport, sidecar_path = discovery
     try:
-        result = verify_sidecar(
-            sidecar_path,
-            public_key_override=args.public_key,
-            config_path_override=args.config,
-            expected_key_id=args.expected_key_id,
-            require_trusted=args.require_trusted,
-        )
+        if transport == "embedded-d":
+            result = verify_embedded_d(
+                sidecar_path,
+                public_key_override=args.public_key,
+                config_path_override=args.config,
+                expected_key_id=args.expected_key_id,
+                require_trusted=args.require_trusted,
+            )
+        else:
+            result = verify_sidecar(
+                sidecar_path,
+                public_key_override=args.public_key,
+                config_path_override=args.config,
+                expected_key_id=args.expected_key_id,
+                require_trusted=args.require_trusted,
+            )
     except (KeyNotFoundError, MalformedKey) as e:
         if json_mode:
             _emit_json(_error_to_json_dict(

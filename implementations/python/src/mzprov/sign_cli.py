@@ -115,7 +115,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Override the sidecar output path. Defaults to "
-            "{stem}.provenance.json in the same directory as the input."
+            "{stem}.provenance.json in the same directory as the input. "
+            "Mutually exclusive with --embed."
+        ),
+    )
+    parser.add_argument(
+        "--embed",
+        action="store_true",
+        help=(
+            "Embed the sidecar envelope inside the artifact instead of "
+            "writing a JSON sidecar file. For .d, the envelope is "
+            "stored in analysis.tdf as a row in the mzprov_provenance "
+            "table (see spec/embedded-d-v0.md). The .d's content hash "
+            "is unchanged by this — the table is excluded from the "
+            "canonical hash. Mutually exclusive with --sidecar."
         ),
     )
     return parser
@@ -153,6 +166,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return EXIT_SIDECAR_ERROR
 
+    if args.embed and args.sidecar is not None:
+        print(
+            "mzprov sign: --embed and --sidecar are mutually exclusive",
+            file=sys.stderr,
+        )
+        return EXIT_GENERIC
+
     try:
         if fmt == "d":
             if args.config is None:
@@ -171,8 +191,20 @@ def main(argv: list[str] | None = None) -> int:
                 simulator_version=args.tool_version,
                 sidecar_path=args.sidecar,
                 private_key_path=args.private_key,
+                embed=args.embed,
             )
         else:  # fmt == "mzml"
+            if args.embed:
+                # mzML embedding is not implemented in this commit; it is
+                # tracked separately (spec/embedded-mzml-v0.md is the
+                # first cut). Refuse explicitly rather than silently
+                # falling through to the JSON path.
+                print(
+                    "mzprov sign: --embed is not yet supported for mzML; "
+                    "it is currently implemented for .d only",
+                    file=sys.stderr,
+                )
+                return EXIT_GENERIC
             sidecar_path = sign_mzml_output(
                 mzml_path=args.path,
                 config_path=args.config,

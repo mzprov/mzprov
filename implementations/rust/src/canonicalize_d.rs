@@ -24,6 +24,11 @@ const CANONICAL_NAN: [u8; 8] = [0x7f, 0xf8, 0, 0, 0, 0, 0, 0];
 const SQLITE_SIDECAR_SUFFIXES: &[&str] = &["-journal", "-wal", "-shm"];
 const BIN_CHUNK: usize = 1 << 20;
 
+/// Reserved table name used by the embedded-d-v0 transport
+/// (`spec/embedded-d-v0.md`). Excluded from canonicalization
+/// unconditionally so that embed-after-hash is well-defined.
+pub const EMBEDDED_PROVENANCE_TABLE: &str = "mzprov_provenance";
+
 /// Render a single SQLite cell to its canonical byte form.
 pub fn canonicalize_value(v: &SqliteValue) -> Vec<u8> {
     match v {
@@ -73,6 +78,14 @@ fn quote_ident(ident: &str) -> String {
     s
 }
 
+/// Refuse to operate on a SQLite database that has any of the
+/// `-journal`, `-wal`, or `-shm` sidecars next to it. Same guard the
+/// canonicalizer uses; exposed so the embedded-d writer can apply it
+/// at sign time and re-check after commit.
+pub fn assert_sqlite_quiescent(db_path: &Path) -> Result<()> {
+    assert_quiescent(db_path)
+}
+
 fn assert_quiescent(db_path: &Path) -> Result<()> {
     let mut found = Vec::new();
     let file_name = db_path.file_name().ok_or_else(|| {
@@ -110,17 +123,20 @@ pub fn canonicalize_sqlite(db_path: &Path) -> Result<[u8; 32]> {
 
     let mut hasher = Sha256::new();
 
-    // List user tables, alphabetical.
+    // List user tables, alphabetical. The reserved `mzprov_provenance`
+    // table is excluded — see EMBEDDED_PROVENANCE_TABLE doc.
     let mut tables: Vec<String> = {
         let mut stmt = conn
             .prepare(
                 "SELECT name FROM sqlite_master \
-                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
+                 WHERE type = 'table' \
+                   AND name NOT LIKE 'sqlite_%' \
+                   AND name != ?1 \
                  ORDER BY name;",
             )
             .map_err(|e| ProvenanceError::Canonicalization(format!("list tables: {e}")))?;
         let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
+            .query_map([EMBEDDED_PROVENANCE_TABLE], |row| row.get::<_, String>(0))
             .map_err(|e| ProvenanceError::Canonicalization(format!("list tables: {e}")))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| ProvenanceError::Canonicalization(format!("list tables: {e}")))?

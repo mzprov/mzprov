@@ -19,7 +19,7 @@ use mzprov::trust::{
     trusted_key_from_pem_file, trusted_key_from_sidecar_file, TrustedKeyRegistry,
 };
 use mzprov::verify::{
-    find_sidecar_for, verify_sidecar_with, CheckStatus, TrustOptions, TrustStatus,
+    verify_sidecar_with, CheckStatus, TrustOptions, TrustStatus,
 };
 
 #[derive(Parser, Debug)]
@@ -72,9 +72,16 @@ enum Cmd {
         /// Path to an Ed25519 PKCS#8 PEM private key.
         #[arg(long)]
         key: PathBuf,
-        /// Override the sidecar output path.
+        /// Override the sidecar output path. Mutually exclusive with --embed.
         #[arg(long)]
         sidecar: Option<PathBuf>,
+        /// Embed the sidecar envelope inside the artifact instead of
+        /// writing a JSON file. For .d, the envelope is stored in
+        /// analysis.tdf as a row in the mzprov_provenance table (see
+        /// spec/embedded-d-v0.md). The .d's content hash is unchanged
+        /// — the table is excluded from canonicalization.
+        #[arg(long)]
+        embed: bool,
     },
     /// Key management.
     Keys {
@@ -149,6 +156,7 @@ fn main() {
             tool_version,
             key,
             sidecar,
+            embed,
         } => run_sign(
             &path,
             &experiment_name,
@@ -158,6 +166,7 @@ fn main() {
             &tool_version,
             &key,
             sidecar.as_deref(),
+            embed,
         ),
         Cmd::Keys { cmd } => match cmd {
             KeysCmd::Generate { out, no_overwrite } => run_keys_generate(&out, no_overwrite),
@@ -176,15 +185,20 @@ fn main() {
 }
 
 fn run_verify(path: &std::path::Path, _strict: bool, trust_opts: TrustOptions) -> i32 {
-    let sidecar_path = match find_sidecar_for(path) {
-        Some(p) => p,
+    let verify_result = match mzprov::verify::find_provenance_for(path) {
+        Some(mzprov::verify::Discovery::EmbeddedD(d)) => {
+            mzprov::verify::verify_embedded_d(&d, &trust_opts)
+        }
+        Some(mzprov::verify::Discovery::SidecarJson(p)) => {
+            verify_sidecar_with(&p, &trust_opts)
+        }
         None => {
             eprintln!("mzprov verify: no sidecar found for {}", path.display());
             return EXIT_UNSIGNED;
         }
     };
 
-    match verify_sidecar_with(&sidecar_path, &trust_opts) {
+    match verify_result {
         Ok(result) => {
             let type_str = match result.type_tag {
                 AttestationType::D => "d",
@@ -258,7 +272,12 @@ fn run_sign(
     tool_version: &str,
     key_path: &std::path::Path,
     sidecar_override: Option<&std::path::Path>,
+    embed: bool,
 ) -> i32 {
+    if embed && sidecar_override.is_some() {
+        eprintln!("mzprov sign: --embed and --sidecar are mutually exclusive");
+        return EXIT_GENERIC;
+    }
     let signing_key = match load_private_key(key_path) {
         Ok(k) => k,
         Err(e) => return provenance_error_to_exit(&e),
@@ -291,8 +310,16 @@ fn run_sign(
             tool_version,
             sidecar_override,
             &signing_key,
+            embed,
         )
     } else if is_mzml {
+        if embed {
+            eprintln!(
+                "mzprov sign: --embed is not yet supported for mzML; \
+                 currently implemented for .d only"
+            );
+            return EXIT_GENERIC;
+        }
         sign_mzml(
             path,
             config,

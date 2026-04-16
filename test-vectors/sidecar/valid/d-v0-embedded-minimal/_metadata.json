@@ -1,0 +1,8 @@
+{
+  "description": "Minimal valid .d with the sidecar envelope embedded in analysis.tdf as a row in the mzprov_provenance table. There is no sibling *.provenance.json. Verifier MUST discover the embedded transport, verify, and report VERIFIED. The .d's content hash MUST be invariant to the presence of the mzprov_provenance row (the table is excluded from canonicalization per spec/canonicalization-d-v0.md \u00a73.2).",
+  "expected_exit_code": 0,
+  "expected_failure": null,
+  "expected_result": "VERIFY",
+  "spec_section": "spec/embedded-d-v0.md",
+  "transport": "embedded-d"
+}

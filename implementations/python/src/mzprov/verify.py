@@ -135,7 +135,13 @@ class TrustCheck:
 
 @dataclass
 class VerificationResult:
-    """The full result of verifying a sidecar."""
+    """The full result of verifying a sidecar.
+
+    ``sidecar_path`` is the on-disk path for the JSON transport. For
+    embedded provenance (the envelope lives inside ``analysis.tdf``)
+    the field carries the .d directory path instead — there is no
+    separate sidecar file. ``transport`` says which mode was used.
+    """
 
     sidecar_path: Path
     payload: Payload
@@ -143,6 +149,7 @@ class VerificationResult:
     signature_ok: bool = False
     overall_ok: bool = False
     trust: TrustCheck = field(default_factory=TrustCheck)
+    transport: str = "sidecar-json"  # "sidecar-json" or "embedded-d"
 
 
 def _hex(b: bytes) -> str:
@@ -179,6 +186,11 @@ def find_sidecar_for(path: PathLike) -> Path | None:
         - If ``path`` is any other directory, look for
           ``*.provenance.json`` inside it.
         - Otherwise return None.
+
+    This function discovers JSON sidecars only. When verifying a .d
+    that may carry an embedded sidecar (see ``spec/embedded-d-v0.md``),
+    callers should use ``find_provenance_for`` instead, which prefers
+    the embedded transport over the JSON fallback.
 
     The "unique sibling" rule is what defends against the multi-bundle
     case where several signed datasets share a parent directory.
@@ -231,6 +243,41 @@ def find_sidecar_for(path: PathLike) -> Path | None:
             return hits[0]
         return None
 
+    return None
+
+
+def find_provenance_for(path: PathLike) -> tuple[str, Path] | None:
+    """Discover provenance for a path, preferring embedded over JSON sidecar.
+
+    Returns one of:
+        - ("embedded-d", d_path)     if ``path`` is a .d carrying an
+                                     embedded ``mzprov_provenance`` row.
+        - ("sidecar-json", json_path) if a JSON sidecar was discovered
+                                     by the rules in ``find_sidecar_for``.
+        - None                        if neither transport resolved.
+
+    The CLI uses this to pick the right verify entry point. Embedded
+    is checked first because it is in-band and authoritative when both
+    are present (see ``spec/embedded-d-v0.md`` §6).
+    """
+    path = Path(path)
+
+    # Embedded transport: only meaningful for a .d directory.
+    if path.is_dir() and path.suffix == ".d" and (path / "analysis.tdf").is_file():
+        from mzprov.embed_d import has_embedded_provenance
+        try:
+            if has_embedded_provenance(path):
+                return ("embedded-d", path)
+        except ProvenanceError:
+            # Quiescence guard or similar — treat as "no embedded
+            # provenance" for discovery purposes; the verifier will
+            # surface the same error if the user explicitly invokes
+            # the embedded path.
+            pass
+
+    json_sidecar = find_sidecar_for(path)
+    if json_sidecar is not None:
+        return ("sidecar-json", json_sidecar)
     return None
 
 
@@ -443,7 +490,46 @@ def verify_sidecar(
             f"could not find a unique .d directory near {save_path}"
         )
 
-    ground_truth_path = save_path / "synthetic_data.db"
+    return _verify_d_payload(
+        sidecar=sidecar,
+        sidecar_path=sidecar_path,
+        d_path=d_path,
+        ground_truth_path=save_path / "synthetic_data.db",
+        conventional_config_path=_config_path_for_sidecar(sidecar_path),
+        config_path_override=config_path_override,
+        derived_signer_pubkey=derived_signer_pubkey,
+        derived_signer_key_id=derived_signer_key_id,
+        expected_key_id=expected_key_id,
+        require_trusted=require_trusted,
+        trusted_registry_path=trusted_registry_path,
+        transport="sidecar-json",
+    )
+
+
+def _verify_d_payload(
+    *,
+    sidecar: Sidecar,
+    sidecar_path: Path,
+    d_path: Path,
+    ground_truth_path: Path,
+    conventional_config_path: Path,
+    config_path_override: PathLike | None,
+    derived_signer_pubkey,
+    derived_signer_key_id: str,
+    expected_key_id: str | None,
+    require_trusted: bool,
+    trusted_registry_path: PathLike | None,
+    transport: str,
+) -> VerificationResult:
+    """Run integrity + trust checks for an already-parsed .d sidecar.
+
+    Shared between the JSON-sidecar path (``verify_sidecar``) and the
+    embedded path (``verify_embedded_d``). The two paths differ only
+    in how the sidecar bytes are obtained and how the .d / config
+    paths are derived; the field-by-field verification logic is
+    identical from here onward.
+    """
+    payload = sidecar.payload
 
     # Recompute the .d hash.
     d_hash = canonicalize_d(d_path)
@@ -479,16 +565,15 @@ def verify_sidecar(
             STATUS_OK if payload.config_hash == config_check_actual else STATUS_MISMATCH
         )
     else:
-        conventional_config = _config_path_for_sidecar(sidecar_path)
-        if conventional_config.is_file():
-            config_hash = canonicalize_bytes(conventional_config.read_bytes())
+        if conventional_config_path.is_file():
+            config_hash = canonicalize_bytes(conventional_config_path.read_bytes())
             config_check_actual = _hex(config_hash)
             config_check_status = (
                 STATUS_OK if payload.config_hash == config_check_actual else STATUS_MISMATCH
             )
         else:
             config_check_detail = (
-                f"no config file found at {conventional_config} "
+                f"no config file found at {conventional_config_path} "
                 f"(pass --config to override)"
             )
 
@@ -608,6 +693,111 @@ def verify_sidecar(
         signature_ok=signature_ok,
         overall_ok=overall_ok,
         trust=trust,
+        transport=transport,
+    )
+
+
+def verify_embedded_d(
+    d_path: PathLike,
+    *,
+    public_key_override: PathLike | None = None,
+    config_path_override: PathLike | None = None,
+    expected_key_id: str | None = None,
+    require_trusted: bool = False,
+    trusted_registry_path: PathLike | None = None,
+) -> VerificationResult:
+    """Verify a .d whose sidecar envelope is embedded inside ``analysis.tdf``.
+
+    Reads the envelope from the ``mzprov_provenance`` table (see
+    ``spec/embedded-d-v0.md``), then runs the same integrity + trust
+    checks as ``verify_sidecar``. Raises ``Unsigned`` if the .d
+    contains no embedded provenance — the caller (typically the CLI's
+    discovery layer) is expected to have already preferred this path
+    over the JSON sidecar fallback when an embedded row exists.
+    """
+    from mzprov.embed_d import read_embedded_provenance
+
+    d_path = Path(d_path)
+    if not d_path.is_dir():
+        raise MissingArtifact(f".d directory does not exist: {d_path}")
+
+    envelope_bytes = read_embedded_provenance(d_path)
+    if envelope_bytes is None:
+        raise Unsigned(
+            f"no embedded provenance found in {d_path}/analysis.tdf "
+            f"(no mzprov_provenance table or no rows)"
+        )
+
+    parsed = parse_sidecar(envelope_bytes)
+    if isinstance(parsed, MzmlSidecar):
+        raise MalformedSidecar(
+            f"embedded provenance in {d_path} is an mzML attestation; "
+            f"expected a .d attestation"
+        )
+    sidecar = parsed
+    payload = sidecar.payload
+
+    # Same key_id consistency enforcement as the JSON path. The label
+    # (payload.key_id) must match the id derived from the embedded
+    # verifying_key, otherwise the sidecar is malformed or forged.
+    try:
+        derived_signer_pubkey = public_key_from_b64(sidecar.verifying_key)
+    except (ValueError, TypeError) as e:
+        raise MalformedSidecar(
+            f"sidecar verifying_key field is not decodable: {e}"
+        ) from e
+    derived_signer_key_id = derive_key_id(derived_signer_pubkey)
+
+    if payload.key_id != derived_signer_key_id:
+        raise MalformedSidecar(
+            f"sidecar payload.key_id ({payload.key_id!r}) does not match "
+            f"the key id derived from sidecar.verifying_key "
+            f"({derived_signer_key_id!r}). The label and the actual signer "
+            f"disagree. This is consistent with a tampered or forged sidecar."
+        )
+
+    if public_key_override is not None:
+        from cryptography.hazmat.primitives import serialization
+
+        try:
+            override_pubkey = load_public_key(public_key_override)
+        except KeyNotFoundError:
+            raise
+        embedded_raw = derived_signer_pubkey.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        override_raw = override_pubkey.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        if embedded_raw != override_raw:
+            raise MalformedSidecar(
+                f"--public-key override does not match the verifying_key "
+                f"embedded in the sidecar."
+            )
+
+    # The artifact path is the .d we already have — no _find_unique_d
+    # search. The conventional config copy mirrors the sign-side
+    # convention: ``{d_stem}.config.toml`` next to the .d.
+    d_stem = d_path.name
+    if d_stem.endswith(".d"):
+        d_stem = d_stem[: -len(".d")]
+    conventional_config_path = d_path.parent / f"{d_stem}.config.toml"
+
+    return _verify_d_payload(
+        sidecar=sidecar,
+        sidecar_path=d_path,
+        d_path=d_path,
+        ground_truth_path=d_path.parent / "synthetic_data.db",
+        conventional_config_path=conventional_config_path,
+        config_path_override=config_path_override,
+        derived_signer_pubkey=derived_signer_pubkey,
+        derived_signer_key_id=derived_signer_key_id,
+        expected_key_id=expected_key_id,
+        require_trusted=require_trusted,
+        trusted_registry_path=trusted_registry_path,
+        transport="embedded-d",
     )
 
 

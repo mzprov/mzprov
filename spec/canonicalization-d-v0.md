@@ -95,7 +95,9 @@ The canonicalizer MUST enumerate user tables via:
 
 ```sql
 SELECT name FROM sqlite_master
-WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+WHERE type = 'table'
+  AND name NOT LIKE 'sqlite_%'
+  AND name != 'mzprov_provenance'
 ORDER BY name;
 ```
 
@@ -104,6 +106,20 @@ SQLite default collation).
 
 Tables whose names begin with `sqlite_` MUST be excluded. Indexes,
 views, and triggers MUST NOT be canonicalized.
+
+The reserved table name `mzprov_provenance` MUST also be excluded.
+This table is the in-band transport for the sidecar envelope when
+provenance is embedded directly in `analysis.tdf` (see
+[`embedded-d-v0.md`](embedded-d-v0.md)). Excluding it from the
+canonical content stream is what makes the embed-after-hash flow
+well-defined: the signer computes the canonical hash, then inserts
+a row into `mzprov_provenance` carrying that hash's signature,
+without invalidating the very hash it just signed. The verifier
+reads the row, recomputes the canonical hash with the row excluded,
+and checks the signature against it. Implementations MUST apply
+this exclusion regardless of whether the table is currently
+present, so a canonical hash computed before the table is inserted
+equals the canonical hash computed after.
 
 ### 3.3 Column enumeration
 

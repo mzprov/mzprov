@@ -68,6 +68,20 @@ def canonicalize_sqlite(db_path):
     return _impl(db_path)
 
 
+# NOTE on the name collision:
+# The package exposes ``mzprov.canonicalize_mzml`` as a public function,
+# but there is also a submodule at ``mzprov/canonicalize_mzml.py``. The
+# *first* ``from mzprov.canonicalize_mzml import X`` anywhere in the
+# process triggers Python's import machinery to bind the submodule as
+# an attribute on the package, which would silently shadow the function
+# below. We trigger that import here, *before* the function is defined,
+# so the ``def`` statement below wins and stays the package attribute.
+# Subsequent ``from mzprov.canonicalize_mzml import X`` calls hit
+# ``sys.modules`` and do not re-shadow.
+import mzprov.canonicalize_mzml as _ensure_submodule_imported  # noqa: F401
+del _ensure_submodule_imported
+
+
 def canonicalize_mzml(mzml_path):
     from mzprov.canonicalize_mzml import canonicalize_mzml as _impl
     return _impl(mzml_path)

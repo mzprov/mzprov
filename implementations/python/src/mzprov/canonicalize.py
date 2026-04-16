@@ -148,12 +148,25 @@ def canonicalize_value(value: object) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+EMBEDDED_PROVENANCE_TABLE = "mzprov_provenance"
+
+
 def _list_user_tables(conn: sqlite3.Connection) -> list[str]:
-    """Return user table names in alphabetical order, excluding sqlite internals."""
+    """Return user table names in alphabetical order, excluding sqlite internals.
+
+    The reserved table name ``mzprov_provenance`` is also excluded —
+    it is the in-band transport for the embedded sidecar envelope
+    (see spec/embedded-d-v0.md). The exclusion is unconditional so a
+    canonical hash computed before the table is inserted equals the
+    canonical hash computed after.
+    """
     cur = conn.execute(
         "SELECT name FROM sqlite_master "
-        "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
-        "ORDER BY name;"
+        "WHERE type = 'table' "
+        "  AND name NOT LIKE 'sqlite_%' "
+        "  AND name != ? "
+        "ORDER BY name;",
+        (EMBEDDED_PROVENANCE_TABLE,),
     )
     return [row[0] for row in cur.fetchall()]
 

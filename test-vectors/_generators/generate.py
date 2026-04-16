@@ -344,6 +344,77 @@ def generate_d_paired_valid() -> None:
     print(f"  [valid:OK] {out_dir.relative_to(VECTORS_ROOT)}/")
 
 
+def generate_d_embedded_valid() -> None:
+    """Build a .d whose sidecar envelope is embedded inside analysis.tdf.
+
+    The vector consists of the .d directory alone — there is no
+    sibling .provenance.json. Conforming implementations MUST verify
+    via the embedded-reader path defined in `spec/embedded-d-v0.md` §5.
+    Metadata describing the expected outcome is written to a
+    `_metadata.json` file alongside the .d (rather than embedded in the
+    sidecar JSON, which is itself inside the SQLite file).
+    """
+    name = "d-v0-embedded-minimal"
+    out_dir = VALID_DIR / name
+    _purge(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    d_path = make_minimal_d(out_dir, name=name)
+    config_path = out_dir / f"{name}.config.toml"
+    config_path.write_bytes(
+        b"[experiment]\n"
+        b'name = "' + name.encode("ascii") + b'"\n'
+        b'description = "mzprov v0 test vector: ' + name.encode("ascii") + b'"\n'
+    )
+
+    sign_simulation_output(
+        d_path=d_path,
+        ground_truth_path=None,
+        config_path=config_path,
+        experiment_name=name,
+        simulator_version="mzprov-test-vectors/0.1.0",
+        private_key_path=TEST_KEY_DIR,
+        embed=True,
+    )
+
+    metadata = {
+        "expected_result": "VERIFY",
+        "expected_exit_code": EXIT_OK,
+        "expected_failure": None,
+        "spec_section": "spec/embedded-d-v0.md",
+        "transport": "embedded-d",
+        "description": (
+            "Minimal valid .d with the sidecar envelope embedded in "
+            "analysis.tdf as a row in the mzprov_provenance table. "
+            "There is no sibling *.provenance.json. Verifier MUST "
+            "discover the embedded transport, verify, and report "
+            "VERIFIED. The .d's content hash MUST be invariant to the "
+            "presence of the mzprov_provenance row (the table is "
+            "excluded from canonicalization per spec/canonicalization-"
+            "d-v0.md §3.2)."
+        ),
+    }
+    (out_dir / "_metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True)
+    )
+
+    # Self-validate via the embedded-verify entry point.
+    from mzprov.verify import verify_embedded_d
+    result = verify_embedded_d(d_path, config_path_override=config_path)
+    if not result.overall_ok:
+        raise RuntimeError(
+            f"embedded vector did not verify cleanly: {d_path}\n"
+            f"  signature_ok: {result.signature_ok}\n"
+            f"  checks: {[(c.name, c.status) for c in result.checks]}"
+        )
+    if result.transport != "embedded-d":
+        raise RuntimeError(
+            f"embedded vector verified but transport was "
+            f"{result.transport!r}; expected 'embedded-d'"
+        )
+    print(f"  [valid:OK] {out_dir.relative_to(VECTORS_ROOT)}/  (embedded)")
+
+
 def generate_mzml_paired_valid() -> None:
     out_dir, sidecar_path = _build_mzml_paired_subdir(VALID_DIR, "mzml-v0-minimal")
     blob = _read_sidecar(sidecar_path)
@@ -713,6 +784,42 @@ def generate_canonicalization_d() -> None:
     )
     print(f"  [canon:d] 001-minimal -> sha256:{canonical_hash.hex()[:16]}...")
 
+    # Exclusion-correctness fixture for spec/embedded-d-v0.md §3.
+    # We build a fresh .d, hash it, INSERT a mzprov_provenance row by
+    # hand (bypassing the signer so the row is deterministic test
+    # bytes), then re-hash. The two hashes MUST be byte-identical:
+    # this is what makes the embed-after-hash protocol well-defined.
+    from mzprov.embed_d import write_embedded_provenance
+
+    excl_path = make_minimal_d(CANON_D_DIR, name="002-with-mzprov-provenance")
+    pre_hash = canonicalize_d(excl_path)
+    # Use a fixed envelope so the stored TEXT cell is byte-stable across
+    # regenerations of this fixture.
+    write_embedded_provenance(
+        excl_path,
+        b'{"_test_only_envelope": "mzprov-test-vectors/exclusion-correctness"}',
+    )
+    post_hash = canonicalize_d(excl_path)
+    if pre_hash != post_hash:
+        raise RuntimeError(
+            "EXCLUSION CORRECTNESS FAILURE: hash before and after embedding "
+            f"the mzprov_provenance row differ:\n"
+            f"  pre:  sha256:{pre_hash.hex()}\n"
+            f"  post: sha256:{post_hash.hex()}"
+        )
+    if pre_hash != canonical_hash:
+        raise RuntimeError(
+            "002-with-mzprov-provenance does not match 001-minimal's hash; "
+            "the exclusion fixture must be a clone of the baseline"
+        )
+    (CANON_D_DIR / "002-with-mzprov-provenance.canonical-hash.txt").write_text(
+        "sha256:" + post_hash.hex() + "\n"
+    )
+    print(
+        f"  [canon:d] 002-with-mzprov-provenance -> sha256:"
+        f"{post_hash.hex()[:16]}... (== 001-minimal)"
+    )
+
     (CANON_D_DIR / "README.md").write_text(
         "# canonicalization/d/ — Bruker .d canonical-hash fixtures\n"
         "\n"
@@ -726,6 +833,7 @@ def generate_canonicalization_d() -> None:
         "| Fixture | Description | Invariance proven |\n"
         "|---|---|---|\n"
         "| `001-minimal.d/` | minimal Bruker-shaped .d (analysis.tdf + analysis.tdf_bin) | baseline |\n"
+        "| `002-with-mzprov-provenance.d/` | identical content to 001 plus a populated `mzprov_provenance` SQLite table | exclusion-rule correctness (per `spec/embedded-d-v0.md` §3); MUST hash identically to 001-minimal |\n"
         "\n"
         "Additional invariance fixtures (page-size, VACUUM, REINDEX,\n"
         "PRAGMA user_version) will land here as the spec is written down.\n"
@@ -813,6 +921,7 @@ def main() -> int:
     print()
     print("=== valid sidecar vectors ===")
     generate_d_paired_valid()
+    generate_d_embedded_valid()
     generate_mzml_paired_valid()
 
     print()

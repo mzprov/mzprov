@@ -93,6 +93,7 @@ def sign_simulation_output(
     simulator_version: str,
     sidecar_path: PathLike | None = None,
     private_key_path: PathLike | None = None,
+    embed: bool = False,
 ) -> Path:
     """Hash, sign, and write a provenance sidecar for a TimSim output.
 
@@ -116,11 +117,21 @@ def sign_simulation_output(
         Override path to an Ed25519 private key (or its containing
         directory). If None, the default ``~/.config/timsim/keys/``
         location is used (and a key is generated there on first use).
+    embed
+        If True, the sidecar envelope is written into the .d's
+        ``analysis.tdf`` SQLite as a row in the ``mzprov_provenance``
+        table (see ``spec/embedded-d-v0.md``) and no JSON sidecar file
+        is produced. Returns the .d path in this mode. The exclusion
+        rule in ``canonicalize.canonicalize_d`` makes embed-after-hash
+        well-defined: the hash computed on the .d before embedding
+        equals the hash computed after.
+        If False (default), the JSON sidecar transport is used.
 
     Returns
     -------
     Path
-        The path to the written sidecar.
+        The path to the written sidecar JSON file in the default mode,
+        or the .d directory path when ``embed=True``.
     """
     d_path = Path(d_path)
     config_path = Path(config_path)
@@ -142,10 +153,36 @@ def sign_simulation_output(
     # which is a ProvenanceError subclass, so the simulator hook's
     # existing required=true handler catches it without special-casing.
 
-    if sidecar_path is None:
-        sidecar_path = d_path.parent / f"{experiment_name}.provenance.json"
+    if embed:
+        # The envelope lives inside analysis.tdf; sidecar_path is unused
+        # in this mode. Refuse a caller-supplied sidecar_path rather
+        # than silently ignoring it — it almost certainly indicates a
+        # mistake.
+        if sidecar_path is not None:
+            raise ValueError(
+                "sidecar_path is not meaningful when embed=True; "
+                "the envelope is stored inside analysis.tdf"
+            )
+        # The config copy convention for the JSON transport pairs
+        # ``{stem}.config.toml`` next to the sidecar. For embedded mode
+        # we reuse the same convention but anchor the stem on the .d
+        # directory: ``{d_stem}.config.toml`` next to the .d. The
+        # verifier rederives this path from the .d location.
+        config_copy_basename = d_path.name
+        if config_copy_basename.endswith(".d"):
+            config_copy_basename = config_copy_basename[: -len(".d")]
+        config_copy_path = d_path.parent / f"{config_copy_basename}.config.toml"
     else:
-        sidecar_path = Path(sidecar_path)
+        if sidecar_path is None:
+            sidecar_path = d_path.parent / f"{experiment_name}.provenance.json"
+        else:
+            sidecar_path = Path(sidecar_path)
+        sidecar_stem = sidecar_path.name
+        if sidecar_stem.endswith(".provenance.json"):
+            sidecar_stem = sidecar_stem[: -len(".provenance.json")]
+        else:
+            sidecar_stem = sidecar_path.stem
+        config_copy_path = sidecar_path.parent / f"{sidecar_stem}.config.toml"
 
     # 1. Compute component hashes from disk.
     d_hash = canonicalize_d(d_path)
@@ -155,20 +192,12 @@ def sign_simulation_output(
     if ground_truth_path is not None:
         ground_truth_hash = canonicalize_sqlite(ground_truth_path)
 
-    # 1a. Copy the config bytes into the experiment directory next to
-    # the sidecar so that timsim-verify has something to recompute the
-    # config hash against. Without this, the verifier has nothing to
-    # check the signed config_hash against and the config part of the
-    # attestation is unverifiable. The copy is named
-    # ``{stem}.config.toml`` where ``{stem}`` is the sidecar basename
-    # minus ``.provenance.json`` — derivable from the sidecar path
-    # alone, no payload trust required.
-    sidecar_stem = sidecar_path.name
-    if sidecar_stem.endswith(".provenance.json"):
-        sidecar_stem = sidecar_stem[: -len(".provenance.json")]
-    else:
-        sidecar_stem = sidecar_path.stem
-    config_copy_path = sidecar_path.parent / f"{sidecar_stem}.config.toml"
+    # 1a. Copy the config bytes alongside the artifact so the verifier
+    # has something to recompute the signed config_hash against. Without
+    # this the config part of the attestation is unverifiable. The copy
+    # location is derived from the sidecar/.d path, never from the
+    # signed payload, so a tampered ``experiment_name`` cannot redirect
+    # the verifier's lookup.
     config_copy_path.parent.mkdir(parents=True, exist_ok=True)
     config_copy_path.write_bytes(config_bytes)
 
@@ -207,8 +236,15 @@ def sign_simulation_output(
         type=ATTESTATION_TYPE,
     )
 
-    # 6. Write atomically.
-    write_sidecar_atomic(sidecar.to_json_bytes(), sidecar_path)
+    # 6. Write the envelope to its transport.
+    envelope_bytes = sidecar.to_json_bytes()
+    if embed:
+        # Local import to avoid a hard dependency on embed_d for the
+        # JSON transport path.
+        from mzprov.embed_d import write_embedded_provenance
+        write_embedded_provenance(d_path, envelope_bytes)
+        return d_path
+    write_sidecar_atomic(envelope_bytes, sidecar_path)
     return sidecar_path
 
 

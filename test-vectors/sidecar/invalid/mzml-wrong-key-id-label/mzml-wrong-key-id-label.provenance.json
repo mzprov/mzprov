@@ -13,11 +13,11 @@
     "experiment_name": "mzml-wrong-key-id-label",
     "key_id": "timsim-local-aaaaaaaaaaaaaaaa",
     "mzml_content_hash": "sha256:bd98911f5558b97a4939e915105af31e7244b0e9367f0a88f168a8d0e713780d",
-    "timestamp_utc": "2026-04-10T07:07:22.610Z",
+    "timestamp_utc": "2026-04-16T19:15:28.194Z",
     "tool_name": "mzprov-test-vectors",
     "tool_version": "0.1.0"
   },
-  "signature": "ed25519:base64:LpN/VF+3JMiNvXgKEnkV3Kx9FWoxEj8407IEEY19it/FumQ8T537CytXSA1+UudB6v2gYwCVTHI0cz4vNu5ZBw==",
+  "signature": "ed25519:base64:F3Kmw6zubOT1lN9OnttBX2B73yIM0nIpl1Xb4tppbt73dmf8anlkORo0HE0IVokwMhMSRTgF0OpHUDJ+6KsrCw==",
   "type": "timsim.provenance.mzml.v0",
   "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
 }

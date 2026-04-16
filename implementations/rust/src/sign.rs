@@ -25,6 +25,13 @@ use crate::keys::{derive_key_id, public_key_to_b64, sign_message, signature_to_b
 /// (`{experiment_name}.provenance.json` by default in the .d's parent)
 /// and copies the config bytes to `{stem}.config.toml`. Returns the
 /// sidecar path.
+///
+/// When `embed=true`, the sidecar envelope is written into
+/// `analysis.tdf` as a row in `mzprov_provenance` (see
+/// `spec/embedded-d-v0.md`); no JSON sidecar file is produced and the
+/// returned path is the .d itself. The exclusion rule in
+/// `canonicalize_d` ensures the .d's content hash does not change as
+/// a result. `sidecar_path` MUST be `None` when `embed=true`.
 #[allow(clippy::too_many_arguments)]
 pub fn sign_d(
     d_path: &Path,
@@ -35,6 +42,7 @@ pub fn sign_d(
     simulator_version: &str,
     sidecar_path: Option<&Path>,
     signing_key: &SigningKey,
+    embed: bool,
 ) -> Result<PathBuf> {
     if !d_path.is_dir() {
         return Err(ProvenanceError::MissingArtifact(format!(
@@ -56,14 +64,36 @@ pub fn sign_d(
             )));
         }
     }
+    if embed && sidecar_path.is_some() {
+        return Err(ProvenanceError::MissingArtifact(
+            "sidecar_path is not meaningful when embed=true; \
+             the envelope is stored inside analysis.tdf"
+                .into(),
+        ));
+    }
 
-    let default_sidecar = d_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(format!("{experiment_name}.provenance.json"));
-    let sidecar = sidecar_path
-        .map(Path::to_path_buf)
-        .unwrap_or(default_sidecar);
+    let (sidecar, config_copy_target): (PathBuf, PathBuf) = if embed {
+        // Embedded mode: there is no sidecar file. The config copy
+        // mirrors the JSON-transport convention but is anchored on
+        // the .d directory: ``{d_stem}.config.toml`` next to the .d.
+        let d_name = d_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("data");
+        let stem = d_name.strip_suffix(".d").unwrap_or(d_name).to_owned();
+        let parent = d_path.parent().unwrap_or_else(|| Path::new("."));
+        (d_path.to_path_buf(), parent.join(format!("{stem}.config.toml")))
+    } else {
+        let default_sidecar = d_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{experiment_name}.provenance.json"));
+        let chosen = sidecar_path.map(Path::to_path_buf).unwrap_or(default_sidecar);
+        let stem = sidecar_stem(&chosen);
+        let parent = chosen.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let cfg = parent.join(format!("{stem}.config.toml"));
+        (chosen, cfg)
+    };
 
     let d_hash = canonicalize_d(d_path)?;
     let config_bytes = fs::read(config_path)?;
@@ -73,7 +103,7 @@ pub fn sign_d(
         None => None,
     };
 
-    copy_config_next_to_sidecar(&sidecar, &config_bytes)?;
+    copy_config_to(&config_copy_target, &config_bytes)?;
 
     let content_hash = compose_content_hash(&d_hash, ground_truth_hash.as_ref(), &config_hash);
 
@@ -98,14 +128,19 @@ pub fn sign_d(
         Value::String(SUPPORTED_CANONICALIZATION.into()),
     );
 
-    write_sidecar(
-        &sidecar,
+    let envelope_bytes = build_envelope_bytes(
         AttestationType::D,
         &payload,
         signing_key,
         &verifying,
-    )?;
-    Ok(sidecar)
+    );
+    if embed {
+        crate::embed_d::write_embedded_provenance(d_path, &envelope_bytes)?;
+        Ok(d_path.to_path_buf())
+    } else {
+        write_atomic(&sidecar, &envelope_bytes)?;
+        Ok(sidecar)
+    }
 }
 
 /// Sign an mzML file. `config_path` is optional; when absent, the signed
@@ -155,7 +190,9 @@ pub fn sign_mzml(
     let config_hash = sha256_bytes(&config_bytes);
 
     if config_path.is_some() {
-        copy_config_next_to_sidecar(&sidecar, &config_bytes)?;
+        let stem = sidecar_stem(&sidecar);
+        let parent = sidecar.parent().unwrap_or_else(|| Path::new("."));
+        copy_config_to(&parent.join(format!("{stem}.config.toml")), &config_bytes)?;
     }
 
     let content_hash = compose_mzml_content_hash(&mzml_hash, &config_hash);
@@ -177,13 +214,13 @@ pub fn sign_mzml(
         Value::String(SUPPORTED_CANONICALIZATION.into()),
     );
 
-    write_sidecar(
-        &sidecar,
+    let envelope_bytes = build_envelope_bytes(
         AttestationType::Mzml,
         &payload,
         signing_key,
         &verifying,
-    )?;
+    );
+    write_atomic(&sidecar, &envelope_bytes)?;
     Ok(sidecar)
 }
 
@@ -202,22 +239,22 @@ fn sidecar_stem(sidecar_path: &Path) -> String {
         .to_owned()
 }
 
-fn copy_config_next_to_sidecar(sidecar_path: &Path, config_bytes: &[u8]) -> Result<()> {
-    let stem = sidecar_stem(sidecar_path);
-    let parent = sidecar_path.parent().unwrap_or_else(|| Path::new("."));
+fn copy_config_to(target: &Path, config_bytes: &[u8]) -> Result<()> {
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
-    fs::write(parent.join(format!("{stem}.config.toml")), config_bytes)?;
+    fs::write(target, config_bytes)?;
     Ok(())
 }
 
-fn write_sidecar(
-    sidecar_path: &Path,
+/// Build the pretty-printed envelope bytes (the JSON representation of
+/// the v0 sidecar). Used by both transports — JSON file and embedded
+/// row carry the *same* envelope; only the storage differs.
+fn build_envelope_bytes(
     type_tag: AttestationType,
     payload: &Map<String, Value>,
     signing_key: &SigningKey,
     verifying: &ed25519_dalek::VerifyingKey,
-) -> Result<()> {
-    // Sign the deterministic canonical bytes of the payload.
+) -> Vec<u8> {
     let signed_bytes = serde_json::to_vec(&Value::Object(payload.clone()))
         .expect("Map<String, Value> must serialize");
     let sig = sign_message(signing_key, &signed_bytes);
@@ -236,10 +273,8 @@ fn write_sidecar(
         Value::String(public_key_to_b64(verifying)),
     );
 
-    let pretty = serde_json::to_vec_pretty(&Value::Object(envelope))
-        .expect("envelope must serialize");
-
-    write_atomic(sidecar_path, &pretty)
+    serde_json::to_vec_pretty(&Value::Object(envelope))
+        .expect("envelope must serialize")
 }
 
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {

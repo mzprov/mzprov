@@ -84,6 +84,15 @@ pub struct TrustOptions {
     pub trusted_registry_path: Option<PathBuf>,
 }
 
+/// Which transport was used to load the sidecar envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// Sidecar JSON file on disk.
+    SidecarJson,
+    /// In-band row in `analysis.tdf`'s `mzprov_provenance` table.
+    EmbeddedD,
+}
+
 #[derive(Debug, Clone)]
 pub struct VerificationResult {
     pub sidecar_path: PathBuf,
@@ -93,6 +102,7 @@ pub struct VerificationResult {
     pub checks: Vec<FieldCheck>,
     pub derived_key_id: String,
     pub trust: TrustCheck,
+    pub transport: Transport,
 }
 
 impl VerificationResult {
@@ -245,6 +255,74 @@ pub fn verify_sidecar_with(
         checks,
         derived_key_id,
         trust,
+        transport: Transport::SidecarJson,
+    })
+}
+
+/// Verify a `.d` whose sidecar envelope is embedded inside `analysis.tdf`.
+///
+/// Reads the envelope from the `mzprov_provenance` table per
+/// `spec/embedded-d-v0.md` §5, then runs the same integrity + trust
+/// checks as [`verify_sidecar_with`]. Returns
+/// [`ProvenanceError::MissingArtifact`] if the .d carries no embedded
+/// row — the caller (typically the discovery layer) is expected to
+/// fall back to JSON sidecar discovery in that case.
+pub fn verify_embedded_d(
+    d_path: &Path,
+    trust_opts: &TrustOptions,
+) -> Result<VerificationResult> {
+    if !d_path.is_dir() {
+        return Err(ProvenanceError::MissingArtifact(format!(
+            ".d directory does not exist: {}",
+            d_path.display()
+        )));
+    }
+
+    let envelope = crate::embed_d::read_embedded_provenance(d_path)?.ok_or_else(|| {
+        ProvenanceError::MissingArtifact(format!(
+            "no embedded provenance found in {}/analysis.tdf",
+            d_path.display()
+        ))
+    })?;
+
+    let sidecar = Sidecar::from_json_bytes(&envelope)?;
+    if sidecar.type_tag != AttestationType::D {
+        return Err(ProvenanceError::MalformedSidecar(format!(
+            "embedded provenance in {} is an mzML attestation; expected a .d attestation",
+            d_path.display()
+        )));
+    }
+
+    let pubkey = public_key_from_b64(&sidecar.verifying_key)?;
+    let derived_key_id = derive_key_id(&pubkey);
+    let payload_key_id = sidecar.payload_str("key_id")?;
+    if payload_key_id != derived_key_id {
+        return Err(ProvenanceError::MalformedSidecar(format!(
+            "sidecar payload.key_id ({payload_key_id:?}) does not match the key id \
+             derived from sidecar.verifying_key ({derived_key_id:?})"
+        )));
+    }
+
+    let signature = signature_from_b64(&sidecar.signature)?;
+    let signed_bytes = sidecar.canonical_payload();
+    let signature_ok = verify_signature(&pubkey, &signed_bytes, &signature);
+
+    let mut checks: Vec<FieldCheck> = Vec::new();
+    verify_d_against(d_path, &sidecar, &mut checks)?;
+
+    let all_fields_ok = checks.iter().all(|c| c.status == CheckStatus::Ok);
+    let trust = evaluate_trust(&derived_key_id, &pubkey, trust_opts);
+    let overall_ok = signature_ok && all_fields_ok && trust.ok();
+
+    Ok(VerificationResult {
+        sidecar_path: d_path.to_path_buf(),
+        type_tag: AttestationType::D,
+        signature_ok,
+        overall_ok,
+        checks,
+        derived_key_id,
+        trust,
+        transport: Transport::EmbeddedD,
     })
 }
 
@@ -359,7 +437,44 @@ fn verify_d(sidecar_path: &Path, sidecar: &Sidecar, checks: &mut Vec<FieldCheck>
             parent.display()
         ))
     })?;
-    let d_hash = canonicalize_d(&d_path)?;
+    verify_d_payload(
+        sidecar,
+        &d_path,
+        config_path_for_sidecar(sidecar_path),
+        parent.join("synthetic_data.db"),
+        checks,
+    )
+}
+
+/// Verify the .d half of a parsed sidecar against an already-known
+/// `.d` directory. Used by the embedded-d verification path.
+fn verify_d_against(d_path: &Path, sidecar: &Sidecar, checks: &mut Vec<FieldCheck>) -> Result<()> {
+    let d_name = d_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("data");
+    let stem = d_name.strip_suffix(".d").unwrap_or(d_name).to_owned();
+    let parent = d_path.parent().unwrap_or_else(|| Path::new("."));
+    verify_d_payload(
+        sidecar,
+        d_path,
+        Some(parent.join(format!("{stem}.config.toml"))),
+        parent.join("synthetic_data.db"),
+        checks,
+    )
+}
+
+/// Shared per-field verification body. Both transports (JSON sidecar
+/// and embedded-d) reduce to this once the artifact and config paths
+/// are known.
+fn verify_d_payload(
+    sidecar: &Sidecar,
+    d_path: &Path,
+    config_path: Option<PathBuf>,
+    ground_truth_path: PathBuf,
+    checks: &mut Vec<FieldCheck>,
+) -> Result<()> {
+    let d_hash = canonicalize_d(d_path)?;
 
     let expected_d = sidecar.payload_str("d_content_hash")?.to_owned();
     let actual_d = encode_hash_field(&d_hash);
@@ -373,14 +488,13 @@ fn verify_d(sidecar_path: &Path, sidecar: &Sidecar, checks: &mut Vec<FieldCheck>
     let gt_field = sidecar.payload_str("ground_truth_hash")?.to_owned();
     let mut gt_hash: Option<[u8; 32]> = None;
     if !gt_field.is_empty() {
-        let gt_path = parent.join("synthetic_data.db");
-        if !gt_path.is_file() {
+        if !ground_truth_path.is_file() {
             return Err(ProvenanceError::MissingArtifact(format!(
                 "sidecar references ground-truth DB but none at {}",
-                gt_path.display()
+                ground_truth_path.display()
             )));
         }
-        let h = canonicalize_sqlite(&gt_path)?;
+        let h = canonicalize_sqlite(&ground_truth_path)?;
         let actual_g = encode_hash_field(&h);
         let status = if gt_field == actual_g {
             CheckStatus::Ok
@@ -393,7 +507,7 @@ fn verify_d(sidecar_path: &Path, sidecar: &Sidecar, checks: &mut Vec<FieldCheck>
 
     let expected_cfg = sidecar.payload_str("config_hash")?.to_owned();
     let (cfg_hash_opt, cfg_actual, cfg_status, cfg_detail) =
-        resolve_config_hash(sidecar_path, &expected_cfg);
+        resolve_config_hash_at(config_path.as_deref(), &expected_cfg);
     push_check(
         checks,
         "config_hash",
@@ -505,9 +619,16 @@ fn resolve_config_hash(
     sidecar_path: &Path,
     expected_cfg: &str,
 ) -> (Option<[u8; 32]>, String, CheckStatus, String) {
-    if let Some(cfg_path) = config_path_for_sidecar(sidecar_path) {
+    resolve_config_hash_at(config_path_for_sidecar(sidecar_path).as_deref(), expected_cfg)
+}
+
+fn resolve_config_hash_at(
+    cfg_path: Option<&Path>,
+    expected_cfg: &str,
+) -> (Option<[u8; 32]>, String, CheckStatus, String) {
+    if let Some(cfg_path) = cfg_path {
         if cfg_path.is_file() {
-            match std::fs::read(&cfg_path) {
+            match std::fs::read(cfg_path) {
                 Ok(bytes) => {
                     let hash = sha256_bytes(&bytes);
                     let actual = encode_hash_field(&hash);
@@ -548,9 +669,44 @@ fn resolve_config_hash(
     )
 }
 
+/// Discovery result. Mirrors the Python `find_provenance_for`.
+#[derive(Debug, Clone)]
+pub enum Discovery {
+    /// Provenance is embedded in `.d`/analysis.tdf as an `mzprov_provenance` row.
+    EmbeddedD(PathBuf),
+    /// Provenance is a JSON sidecar at the given path.
+    SidecarJson(PathBuf),
+}
+
+/// Locate provenance for a path, preferring embedded over JSON sidecar.
+///
+/// For `.d` directories, the embedded transport is checked first
+/// (`spec/embedded-d-v0.md` §6 — embedded is in-band and authoritative
+/// when both forms are present). For everything else this falls
+/// through to [`find_sidecar_for`].
+pub fn find_provenance_for(path: &Path) -> Option<Discovery> {
+    if path.is_dir()
+        && path.extension().and_then(|s| s.to_str()) == Some("d")
+        && path.join("analysis.tdf").is_file()
+    {
+        match crate::embed_d::has_embedded_provenance(path) {
+            Ok(true) => return Some(Discovery::EmbeddedD(path.to_path_buf())),
+            // Quiescence guard or similar — treat as "no embedded
+            // provenance" for discovery; the verifier surfaces the
+            // same error if the user invokes the embedded path.
+            Ok(false) | Err(_) => {}
+        }
+    }
+    find_sidecar_for(path).map(Discovery::SidecarJson)
+}
+
 /// Discovery rule for a sidecar given a path to any of: the sidecar itself,
 /// a `.d` directory, an mzML file, or an experiment directory. Mirrors
 /// `spec/sidecar-format.md` §8.
+///
+/// This function discovers JSON sidecars only. For full transport-aware
+/// discovery (embedded preferred over JSON for `.d`), use
+/// [`find_provenance_for`].
 pub fn find_sidecar_for(path: &Path) -> Option<PathBuf> {
     if path.is_file()
         && path.extension().and_then(|s| s.to_str()) == Some("json")
