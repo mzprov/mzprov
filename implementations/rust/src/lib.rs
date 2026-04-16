@@ -21,6 +21,7 @@ pub mod envelope;
 pub mod errors;
 pub mod exit_codes;
 pub mod keys;
+pub mod paths;
 pub mod sign;
 pub mod trust;
 pub mod verify;

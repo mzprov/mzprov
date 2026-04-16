@@ -30,6 +30,7 @@ from mzprov.errors import (
     UnknownVersion,
 )
 from mzprov.verify import (
+    Transport,
     VerificationResult,
     find_provenance_for,
     verify_embedded_d,
@@ -357,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
 
     transport, sidecar_path = discovery
     try:
-        if transport == "embedded-d":
+        if transport is Transport.EMBEDDED_D:
             result = verify_embedded_d(
                 sidecar_path,
                 public_key_override=args.public_key,
@@ -365,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
                 expected_key_id=args.expected_key_id,
                 require_trusted=args.require_trusted,
             )
-        elif transport == "embedded-mzml":
+        elif transport is Transport.EMBEDDED_MZML:
             result = verify_embedded_mzml(
                 sidecar_path,
                 public_key_override=args.public_key,

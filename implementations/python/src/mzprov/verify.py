@@ -17,6 +17,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Union
 
+from enum import Enum
+from typing import NamedTuple
+
 from cryptography.exceptions import InvalidSignature
 
 from mzprov.canonicalize import (
@@ -51,6 +54,11 @@ from mzprov.keys import (
     public_key_from_b64,
     signature_from_b64,
 )
+from mzprov.paths import (
+    embedded_d_config_path,
+    embedded_mzml_config_path,
+    sidecar_config_path,
+)
 
 PathLike = Union[str, Path]
 
@@ -61,6 +69,33 @@ PathLike = Union[str, Path]
 STATUS_OK = "ok"
 STATUS_MISMATCH = "mismatch"
 STATUS_UNCHECKED = "unchecked"
+
+
+class Transport(str, Enum):
+    """Which transport was used to load (or discover) a sidecar envelope.
+
+    Inherits from ``str`` so existing ``transport == "embedded-d"``
+    callers keep working — the enum members compare equal to their
+    string values.
+    """
+
+    SIDECAR_JSON = "sidecar-json"
+    EMBEDDED_D = "embedded-d"
+    EMBEDDED_MZML = "embedded-mzml"
+
+
+class Discovery(NamedTuple):
+    """Result of ``find_provenance_for``.
+
+    ``transport`` says which path resolved; ``path`` is the file or
+    directory the verifier should hand to the matching verify entry
+    point. As a NamedTuple this destructures the same way the prior
+    ``(str, Path)`` tuple did, so existing callers (``transport, path
+    = discovery``) keep working.
+    """
+
+    transport: Transport
+    path: Path
 
 
 @dataclass
@@ -246,76 +281,83 @@ def find_sidecar_for(path: PathLike) -> Path | None:
     return None
 
 
-def find_provenance_for(path: PathLike) -> tuple[str, Path] | None:
+def _probe_embedded_d(path: Path) -> Path | None:
+    """If ``path`` resolves to an embedded-d ``.d``, return its path.
+
+    Resolves either ``path`` itself (when it is the ``.d``) or a
+    unique ``.d`` inside ``path`` (the experiment-directory descent
+    from ``spec/embedded-d-v0.md`` §6.1). Returns ``None`` when
+    nothing resolves OR when the resolved ``.d`` carries no embedded
+    row.
+
+    Errors from the embedded probe (``SqliteNotQuiescent``,
+    ``MalformedSidecar`` from a multi-row embed, etc.) propagate per
+    spec §6.2 — this function deliberately does NOT mask them.
+    """
+    if path.is_dir() and path.suffix == ".d" and (path / "analysis.tdf").is_file():
+        candidate = path
+    elif path.is_dir():
+        candidate = _find_unique_d(path)
+    else:
+        return None
+    if candidate is None:
+        return None
+
+    from mzprov.embed_d import has_embedded_provenance as _has
+
+    return candidate if _has(candidate) else None
+
+
+def _probe_embedded_mzml(path: Path) -> Path | None:
+    """If ``path`` resolves to an embedded-mzml file, return its path.
+
+    Symmetric to ``_probe_embedded_d``: handles a direct ``.mzML``
+    path or a unique ``.mzML`` inside an experiment directory.
+    Errors propagate per ``spec/embedded-mzml-v0.md`` §7.2.
+    """
+    if path.is_file() and path.suffix.lower() == ".mzml":
+        candidate = path
+    elif path.is_dir():
+        candidate = _find_unique_mzml(path)
+    else:
+        return None
+    if candidate is None:
+        return None
+
+    from mzprov.embed_mzml import has_embedded_provenance as _has
+
+    return candidate if _has(candidate) else None
+
+
+def find_provenance_for(path: PathLike) -> Discovery | None:
     """Discover provenance for a path, preferring embedded over JSON sidecar.
 
-    Returns one of:
-        - ("embedded-d", d_path)     if a .d carrying an embedded
-                                     ``mzprov_provenance`` row was
-                                     resolved (either ``path`` itself
-                                     or a unique .d inside an
-                                     experiment directory ``path``).
-        - ("embedded-mzml", mzml_path) if an mzML carrying an embedded
-                                     ``mzprov:provenance`` userParam
-                                     was resolved (either ``path``
-                                     itself or a unique mzml inside an
-                                     experiment directory ``path``).
-        - ("sidecar-json", json_path) if a JSON sidecar was discovered
-                                     by the rules in ``find_sidecar_for``.
-        - None                        if neither transport resolved.
+    Returns a :class:`Discovery` (a ``(transport, path)`` NamedTuple)
+    naming the resolved transport, or ``None`` when nothing resolved
+    (caller should report ``UNSIGNED``).
 
-    The CLI uses this to pick the right verify entry point. Embedded
-    is checked first because it is in-band and authoritative when both
-    are present (see ``spec/embedded-d-v0.md`` §6).
+    Probe order — embedded first because it is in-band and
+    authoritative when both forms are present (per
+    ``spec/embedded-d-v0.md`` §6 and ``spec/embedded-mzml-v0.md`` §7):
 
-    When ``path`` is a directory that is NOT itself a .d, this also
-    descends into the directory looking for a unique .d (depth 0 or 1,
-    matching the conventional ``{save_path}/{exp}/{exp}.d`` layout)
-    and probes that for embedded provenance — without which an
-    embedded-only experiment directory would be misreported as
-    UNSIGNED (per ``spec/embedded-d-v0.md`` §6.1).
+      1. embedded-d (``.d`` direct OR descent into experiment dir)
+      2. embedded-mzml (``.mzML`` direct OR descent into experiment dir)
+      3. JSON sidecar discovery via :func:`find_sidecar_for`
 
-    Errors raised by the embedded probe (``SqliteNotQuiescent`` from a
-    `-wal` / `-journal` / `-shm` sidecar, ``MalformedSidecar`` from a
-    multi-row or non-UTF-8 embed, etc.) propagate; this function
-    deliberately does NOT silently fall back to the JSON transport in
-    that case (per ``spec/embedded-d-v0.md`` §6.2). Letting a stale
-    or malformed embed be masked by a co-located JSON sidecar would
-    defeat the "embedded is authoritative" guarantee.
+    Errors raised by either embedded probe propagate; quietly falling
+    back to a sibling JSON sidecar would defeat the "embedded is
+    authoritative" guarantee (spec §6.2 / §7.2).
     """
     path = Path(path)
 
-    # Embedded transport: probe a .d directly, OR descend into a
-    # unique .d when given an experiment directory. Errors propagate.
-    candidate_d: Path | None = None
-    if path.is_dir() and path.suffix == ".d" and (path / "analysis.tdf").is_file():
-        candidate_d = path
-    elif path.is_dir():
-        # Re-use the verifier's artifact discovery helper so the
-        # depth-0/depth-1 layout rules stay in one place.
-        candidate_d = _find_unique_d(path)
-
-    if candidate_d is not None:
-        from mzprov.embed_d import has_embedded_provenance
-        if has_embedded_provenance(candidate_d):
-            return ("embedded-d", candidate_d)
-
-    # Embedded mzML transport: same dispatch shape as .d. Probe an
-    # mzML directly, OR descend into a unique mzml inside a directory.
-    candidate_mzml: Path | None = None
-    if path.is_file() and path.suffix.lower() == ".mzml":
-        candidate_mzml = path
-    elif path.is_dir():
-        candidate_mzml = _find_unique_mzml(path)
-
-    if candidate_mzml is not None:
-        from mzprov.embed_mzml import has_embedded_provenance as _has_mzml_embedded
-        if _has_mzml_embedded(candidate_mzml):
-            return ("embedded-mzml", candidate_mzml)
+    if (d := _probe_embedded_d(path)) is not None:
+        return Discovery(Transport.EMBEDDED_D, d)
+    if (m := _probe_embedded_mzml(path)) is not None:
+        return Discovery(Transport.EMBEDDED_MZML, m)
 
     json_sidecar = find_sidecar_for(path)
     if json_sidecar is not None:
-        return ("sidecar-json", json_sidecar)
+        return Discovery(Transport.SIDECAR_JSON, json_sidecar)
     return None
 
 
@@ -363,20 +405,75 @@ def _find_unique_d(search_root: Path) -> Path | None:
     return None
 
 
-def _config_path_for_sidecar(sidecar_path: Path) -> Path:
-    """Return the conventional config-copy path for a given sidecar path.
+# The config-copy path conventions live in ``mzprov.paths`` so the
+# signer and verifier derive them from a single source. ``_config_path_for_sidecar``
+# is kept as an alias so existing callers below continue to read
+# unchanged.
+_config_path_for_sidecar = sidecar_config_path
 
-    Convention: a sidecar at ``foo.provenance.json`` has its config copy
-    at ``foo.config.toml`` in the same directory. The basename match is
-    derived from the sidecar filename, NOT from any payload field, so a
-    tampered ``experiment_name`` field cannot redirect this lookup.
+
+def _validate_signer_identity(
+    sidecar,
+    *,
+    public_key_override: PathLike | None,
+):
+    """Decode the embedded verifying_key, derive its key id, enforce
+    consistency with payload.key_id, and (if given) verify the
+    --public-key override matches byte-for-byte.
+
+    Returns ``(derived_signer_pubkey, derived_signer_key_id)``.
+    Raises ``MalformedSidecar`` for any structural inconsistency
+    that means the sidecar's claimed signer is not the actual signer.
+    Raises ``KeyNotFoundError`` if ``--public-key`` points at a
+    missing file (propagated unchanged from ``load_public_key``).
+
+    This prelude runs identically for every verify path (sidecar
+    JSON, embedded-d, embedded-mzml). Centralizing it here means a
+    policy change applies to all transports atomically; the previous
+    per-path copies were a drift hazard.
     """
-    name = sidecar_path.name
-    if name.endswith(".provenance.json"):
-        stem = name[: -len(".provenance.json")]
-    else:
-        stem = sidecar_path.stem
-    return sidecar_path.parent / f"{stem}.config.toml"
+    try:
+        derived_signer_pubkey = public_key_from_b64(sidecar.verifying_key)
+    except (ValueError, TypeError) as e:
+        raise MalformedSidecar(
+            f"sidecar verifying_key field is not decodable: {e}"
+        ) from e
+    derived_signer_key_id = derive_key_id(derived_signer_pubkey)
+
+    if sidecar.payload.key_id != derived_signer_key_id:
+        raise MalformedSidecar(
+            f"sidecar payload.key_id ({sidecar.payload.key_id!r}) does not match "
+            f"the key id derived from sidecar.verifying_key "
+            f"({derived_signer_key_id!r}). The label and the actual signer "
+            f"disagree. This is consistent with a tampered or forged sidecar."
+        )
+
+    if public_key_override is not None:
+        from cryptography.hazmat.primitives import serialization
+
+        try:
+            override_pubkey = load_public_key(public_key_override)
+        except KeyNotFoundError:
+            raise  # propagate the explicit not-found
+
+        embedded_raw = derived_signer_pubkey.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        override_raw = override_pubkey.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        if embedded_raw != override_raw:
+            raise MalformedSidecar(
+                f"--public-key override does not match the verifying_key "
+                f"embedded in the sidecar. The override is a consistency "
+                f"check against an out-of-band copy of the trusted public "
+                f"key; if it does not match the embedded key, the sidecar "
+                f"is not what you thought it was."
+            )
+
+    return derived_signer_pubkey, derived_signer_key_id
 
 
 def verify_sidecar(
@@ -454,67 +551,9 @@ def verify_sidecar(
     sidecar = parsed
     payload = sidecar.payload
 
-    # CRITICAL: derive the actual signer's key id from the embedded
-    # verifying_key, NOT from payload.key_id. payload.key_id is an
-    # attacker-controllable signed string and using it for trust
-    # comparisons would let a forger lie about which key they used.
-    # The cryptographic identity is the verifying_key alone. Decode
-    # errors here are wrapped as MalformedSidecar later in the
-    # signature-loading block.
-    try:
-        derived_signer_pubkey = public_key_from_b64(sidecar.verifying_key)
-    except (ValueError, TypeError) as e:
-        raise MalformedSidecar(
-            f"sidecar verifying_key field is not decodable: {e}"
-        ) from e
-    derived_signer_key_id = derive_key_id(derived_signer_pubkey)
-
-    # Enforce consistency between the LABEL (payload.key_id) and the
-    # actual signer (derived_signer_key_id). If they disagree, the
-    # sidecar is malformed at best and a forgery attempt at worst —
-    # never silently accept the label. This catches the bypass where
-    # an attacker re-signs a payload they mutated to claim a different
-    # key id while keeping their own verifying_key.
-    if payload.key_id != derived_signer_key_id:
-        raise MalformedSidecar(
-            f"sidecar payload.key_id ({payload.key_id!r}) does not match "
-            f"the key id derived from sidecar.verifying_key "
-            f"({derived_signer_key_id!r}). The label and the actual signer "
-            f"disagree. This is consistent with a tampered or forged sidecar."
-        )
-
-    # If the caller supplied --public-key, it acts as a CONSISTENCY
-    # CHECK against the embedded verifying_key — NOT as an alternative
-    # trust path. Without this, an attacker could ship a sidecar with
-    # one verifying_key embedded, sign with a DIFFERENT private key,
-    # and convince the user to verify with --public-key=<the actual
-    # signer>. The math would work, but trust would attach to the
-    # embedded label, not the override key. We refuse the split
-    # identity by requiring the override to equal the embedded key
-    # byte-for-byte.
-    if public_key_override is not None:
-        from cryptography.hazmat.primitives import serialization
-
-        try:
-            override_pubkey = load_public_key(public_key_override)
-        except KeyNotFoundError:
-            raise  # propagate the explicit not-found
-        embedded_raw = derived_signer_pubkey.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-        override_raw = override_pubkey.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-        if embedded_raw != override_raw:
-            raise MalformedSidecar(
-                f"--public-key override does not match the verifying_key "
-                f"embedded in the sidecar. The override is a consistency "
-                f"check against an out-of-band copy of the trusted public "
-                f"key; if it does not match the embedded key, the sidecar "
-                f"is not what you thought it was."
-            )
+    derived_signer_pubkey, derived_signer_key_id = _validate_signer_identity(
+        sidecar, public_key_override=public_key_override
+    )
 
     # Locate the .d INDEPENDENTLY of the payload, so a tampered
     # experiment_name field cannot redirect verification to a phantom
@@ -773,55 +812,14 @@ def verify_embedded_d(
             f"expected a .d attestation"
         )
     sidecar = parsed
-    payload = sidecar.payload
-
-    # Same key_id consistency enforcement as the JSON path. The label
-    # (payload.key_id) must match the id derived from the embedded
-    # verifying_key, otherwise the sidecar is malformed or forged.
-    try:
-        derived_signer_pubkey = public_key_from_b64(sidecar.verifying_key)
-    except (ValueError, TypeError) as e:
-        raise MalformedSidecar(
-            f"sidecar verifying_key field is not decodable: {e}"
-        ) from e
-    derived_signer_key_id = derive_key_id(derived_signer_pubkey)
-
-    if payload.key_id != derived_signer_key_id:
-        raise MalformedSidecar(
-            f"sidecar payload.key_id ({payload.key_id!r}) does not match "
-            f"the key id derived from sidecar.verifying_key "
-            f"({derived_signer_key_id!r}). The label and the actual signer "
-            f"disagree. This is consistent with a tampered or forged sidecar."
-        )
-
-    if public_key_override is not None:
-        from cryptography.hazmat.primitives import serialization
-
-        try:
-            override_pubkey = load_public_key(public_key_override)
-        except KeyNotFoundError:
-            raise
-        embedded_raw = derived_signer_pubkey.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-        override_raw = override_pubkey.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-        if embedded_raw != override_raw:
-            raise MalformedSidecar(
-                f"--public-key override does not match the verifying_key "
-                f"embedded in the sidecar."
-            )
+    derived_signer_pubkey, derived_signer_key_id = _validate_signer_identity(
+        sidecar, public_key_override=public_key_override
+    )
 
     # The artifact path is the .d we already have — no _find_unique_d
-    # search. The conventional config copy mirrors the sign-side
-    # convention: ``{d_stem}.config.toml`` next to the .d.
-    d_stem = d_path.name
-    if d_stem.endswith(".d"):
-        d_stem = d_stem[: -len(".d")]
-    conventional_config_path = d_path.parent / f"{d_stem}.config.toml"
+    # search. The conventional config copy is the embedded-d path
+    # convention shared with the signer (mzprov.paths).
+    conventional_config_path = embedded_d_config_path(d_path)
 
     return _verify_d_payload(
         sidecar=sidecar,
@@ -1025,44 +1023,9 @@ def _verify_mzml_sidecar(
       - Trust pinning (--expected-key-id, --require-trusted) layers on top.
       - The mzml file is discovered independently of the payload.
     """
-    payload = sidecar.payload
-
-    # Derive the actual signer key id from verifying_key. Same logic as
-    # the .d path; copy-pasted intentionally to keep the two paths
-    # readable independently.
-    try:
-        derived_signer_pubkey = public_key_from_b64(sidecar.verifying_key)
-    except (ValueError, TypeError) as e:
-        raise MalformedSidecar(
-            f"sidecar verifying_key field is not decodable: {e}"
-        ) from e
-    derived_signer_key_id = derive_key_id(derived_signer_pubkey)
-
-    if payload.key_id != derived_signer_key_id:
-        raise MalformedSidecar(
-            f"sidecar payload.key_id ({payload.key_id!r}) does not match "
-            f"the key id derived from sidecar.verifying_key "
-            f"({derived_signer_key_id!r}). This is consistent with a "
-            f"tampered or forged sidecar."
-        )
-
-    if public_key_override is not None:
-        from cryptography.hazmat.primitives import serialization
-
-        override_pubkey = load_public_key(public_key_override)
-        embedded_raw = derived_signer_pubkey.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-        override_raw = override_pubkey.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-        if embedded_raw != override_raw:
-            raise MalformedSidecar(
-                f"--public-key override does not match the verifying_key "
-                f"embedded in the sidecar."
-            )
+    derived_signer_pubkey, derived_signer_key_id = _validate_signer_identity(
+        sidecar, public_key_override=public_key_override
+    )
 
     # Discover the .mzML file independently of the payload. Try the
     # conventional {sidecar_stem}.mzML pairing first so co-located
@@ -1076,15 +1039,10 @@ def _verify_mzml_sidecar(
             f"and any unique sibling .mzML)"
         )
 
-    # Conventional config copy for the JSON transport: {sidecar-stem}
-    # .config.toml next to the sidecar. Anchored on the sidecar's name,
+    # Conventional config copy for the JSON transport — shared
+    # convention from mzprov.paths. Anchored on the sidecar's name,
     # never on a payload field.
-    sidecar_stem_name = sidecar_path.name
-    if sidecar_stem_name.endswith(".provenance.json"):
-        sidecar_stem_name = sidecar_stem_name[: -len(".provenance.json")]
-    else:
-        sidecar_stem_name = sidecar_path.stem
-    conventional_config_path = sidecar_path.parent / f"{sidecar_stem_name}.config.toml"
+    conventional_config_path = sidecar_config_path(sidecar_path)
 
     return _verify_mzml_payload(
         sidecar=sidecar,
@@ -1300,47 +1258,14 @@ def verify_embedded_mzml(
             f"attestation (got type={parsed.type!r})"
         )
     sidecar = parsed
-    payload = sidecar.payload
 
-    # Same key_id consistency / pubkey-override checks as the JSON path.
-    try:
-        derived_signer_pubkey = public_key_from_b64(sidecar.verifying_key)
-    except (ValueError, TypeError) as e:
-        raise MalformedSidecar(
-            f"sidecar verifying_key field is not decodable: {e}"
-        ) from e
-    derived_signer_key_id = derive_key_id(derived_signer_pubkey)
-
-    if payload.key_id != derived_signer_key_id:
-        raise MalformedSidecar(
-            f"sidecar payload.key_id ({payload.key_id!r}) does not match "
-            f"the key id derived from sidecar.verifying_key "
-            f"({derived_signer_key_id!r})."
-        )
-
-    if public_key_override is not None:
-        from cryptography.hazmat.primitives import serialization
-
-        override_pubkey = load_public_key(public_key_override)
-        embedded_raw = derived_signer_pubkey.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-        override_raw = override_pubkey.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-        if embedded_raw != override_raw:
-            raise MalformedSidecar(
-                f"--public-key override does not match the verifying_key "
-                f"embedded in the sidecar."
-            )
-
-    # Conventional config copy for embedded mzml: ``{mzml-stem}.config.toml``
-    # next to the mzml. Mirrors the embedded-d convention.
-    conventional_config_path = mzml_path.with_name(
-        mzml_path.stem + ".config.toml"
+    derived_signer_pubkey, derived_signer_key_id = _validate_signer_identity(
+        sidecar, public_key_override=public_key_override
     )
+
+    # Conventional config copy for embedded mzml — shared convention
+    # from mzprov.paths.
+    conventional_config_path = embedded_mzml_config_path(mzml_path)
 
     return _verify_mzml_payload(
         sidecar=sidecar,

@@ -34,6 +34,11 @@ from mzprov.envelope import (
     Sidecar,
 )
 from mzprov.errors import MissingArtifact, ProvenanceError
+from mzprov.paths import (
+    embedded_d_config_path,
+    embedded_mzml_config_path,
+    sidecar_config_path,
+)
 from mzprov.keys import (
     KeyPair,
     load_or_create_keypair,
@@ -163,26 +168,13 @@ def sign_simulation_output(
                 "sidecar_path is not meaningful when embed=True; "
                 "the envelope is stored inside analysis.tdf"
             )
-        # The config copy convention for the JSON transport pairs
-        # ``{stem}.config.toml`` next to the sidecar. For embedded mode
-        # we reuse the same convention but anchor the stem on the .d
-        # directory: ``{d_stem}.config.toml`` next to the .d. The
-        # verifier rederives this path from the .d location.
-        config_copy_basename = d_path.name
-        if config_copy_basename.endswith(".d"):
-            config_copy_basename = config_copy_basename[: -len(".d")]
-        config_copy_path = d_path.parent / f"{config_copy_basename}.config.toml"
+        config_copy_path = embedded_d_config_path(d_path)
     else:
         if sidecar_path is None:
             sidecar_path = d_path.parent / f"{experiment_name}.provenance.json"
         else:
             sidecar_path = Path(sidecar_path)
-        sidecar_stem = sidecar_path.name
-        if sidecar_stem.endswith(".provenance.json"):
-            sidecar_stem = sidecar_stem[: -len(".provenance.json")]
-        else:
-            sidecar_stem = sidecar_path.stem
-        config_copy_path = sidecar_path.parent / f"{sidecar_stem}.config.toml"
+        config_copy_path = sidecar_config_path(sidecar_path)
 
     # 1. Compute component hashes from disk.
     d_hash = canonicalize_d(d_path)
@@ -336,19 +328,14 @@ def sign_mzml_output(
                 "sidecar_path is not meaningful when embed=True; "
                 "the envelope is stored inside the mzML's fileContent"
             )
-        # Config copy convention for embedded mzml: ``{mzml_stem}.config.toml``
-        # next to the mzml. The verifier rederives this path from the mzml
-        # location so it never depends on a payload field.
         sidecar_path = mzml_path  # the "result path" returned to the caller
-        config_copy_target = mzml_path.with_name(
-            mzml_path.stem + ".config.toml"
-        )
+        config_copy_target = embedded_mzml_config_path(mzml_path)
     else:
         if sidecar_path is None:
             sidecar_path = mzml_path.with_name(mzml_path.stem + ".provenance.json")
         else:
             sidecar_path = Path(sidecar_path)
-        config_copy_target = None  # set below from sidecar stem
+        config_copy_target = sidecar_config_path(sidecar_path)
 
     # 1. Compute component hashes from disk.
     mzml_hash = canonicalize_mzml(mzml_path)
@@ -360,13 +347,6 @@ def sign_mzml_output(
     # anchored on the artifact's name (or the sidecar's stem in the
     # JSON-transport case), never on a payload field.
     if config_path is not None:
-        if config_copy_target is None:
-            sidecar_stem = sidecar_path.name
-            if sidecar_stem.endswith(".provenance.json"):
-                sidecar_stem = sidecar_stem[: -len(".provenance.json")]
-            else:
-                sidecar_stem = sidecar_path.stem
-            config_copy_target = sidecar_path.parent / f"{sidecar_stem}.config.toml"
         config_copy_target.parent.mkdir(parents=True, exist_ok=True)
         config_copy_target.write_bytes(config_bytes)
 

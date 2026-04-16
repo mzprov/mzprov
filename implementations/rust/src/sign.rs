@@ -14,6 +14,9 @@ use serde_json::{Map, Value};
 
 use crate::canonicalize_d::{canonicalize_d, canonicalize_sqlite, compose_content_hash, sha256_bytes};
 use crate::canonicalize_mzml::{canonicalize_mzml, compose_mzml_content_hash};
+use crate::paths::{
+    embedded_d_config_path, embedded_mzml_config_path, sidecar_config_path,
+};
 use crate::envelope::{
     encode_hash_field, AttestationType, ATTESTATION_TYPE_D, ATTESTATION_TYPE_MZML,
     SUPPORTED_CANONICALIZATION,
@@ -73,25 +76,16 @@ pub fn sign_d(
     }
 
     let (sidecar, config_copy_target): (PathBuf, PathBuf) = if embed {
-        // Embedded mode: there is no sidecar file. The config copy
-        // mirrors the JSON-transport convention but is anchored on
-        // the .d directory: ``{d_stem}.config.toml`` next to the .d.
-        let d_name = d_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("data");
-        let stem = d_name.strip_suffix(".d").unwrap_or(d_name).to_owned();
-        let parent = d_path.parent().unwrap_or_else(|| Path::new("."));
-        (d_path.to_path_buf(), parent.join(format!("{stem}.config.toml")))
+        // Embedded mode: there is no sidecar file. The config copy is
+        // the conventional embedded-d location.
+        (d_path.to_path_buf(), embedded_d_config_path(d_path))
     } else {
         let default_sidecar = d_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(format!("{experiment_name}.provenance.json"));
         let chosen = sidecar_path.map(Path::to_path_buf).unwrap_or(default_sidecar);
-        let stem = sidecar_stem(&chosen);
-        let parent = chosen.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-        let cfg = parent.join(format!("{stem}.config.toml"));
+        let cfg = sidecar_config_path(&chosen);
         (chosen, cfg)
     };
 
@@ -193,13 +187,8 @@ pub fn sign_mzml(
 
     let (sidecar, config_copy_target): (PathBuf, PathBuf) = if embed {
         // Embedded mode: the "result path" is the mzml itself; the
-        // config copy is anchored on the mzml's stem.
-        let stem = mzml_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("sample");
-        let parent = mzml_path.parent().unwrap_or_else(|| Path::new("."));
-        (mzml_path.to_path_buf(), parent.join(format!("{stem}.config.toml")))
+        // config copy is the conventional embedded-mzml location.
+        (mzml_path.to_path_buf(), embedded_mzml_config_path(mzml_path))
     } else {
         let default_sidecar = {
             let stem = mzml_path
@@ -212,9 +201,7 @@ pub fn sign_mzml(
                 .join(format!("{stem}.provenance.json"))
         };
         let chosen = sidecar_path.map(Path::to_path_buf).unwrap_or(default_sidecar);
-        let stem = sidecar_stem(&chosen);
-        let parent = chosen.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-        let cfg = parent.join(format!("{stem}.config.toml"));
+        let cfg = sidecar_config_path(&chosen);
         (chosen, cfg)
     };
 
@@ -257,21 +244,6 @@ pub fn sign_mzml(
         write_atomic(&sidecar, &envelope_bytes)?;
         Ok(sidecar)
     }
-}
-
-fn sidecar_stem(sidecar_path: &Path) -> String {
-    let name = sidecar_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("sidecar");
-    if let Some(stem) = name.strip_suffix(".provenance.json") {
-        return stem.to_owned();
-    }
-    sidecar_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("sidecar")
-        .to_owned()
 }
 
 fn copy_config_to(target: &Path, config_bytes: &[u8]) -> Result<()> {

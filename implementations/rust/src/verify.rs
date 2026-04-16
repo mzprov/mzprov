@@ -13,6 +13,9 @@ use crate::canonicalize_d::{
     canonicalize_d, canonicalize_sqlite, compose_content_hash, sha256_bytes,
 };
 use crate::canonicalize_mzml::{canonicalize_mzml, compose_mzml_content_hash};
+use crate::paths::{
+    embedded_d_config_path, embedded_mzml_config_path, sidecar_config_path,
+};
 use crate::envelope::{
     decode_hash_field, encode_hash_field, AttestationType, Sidecar,
 };
@@ -184,12 +187,34 @@ fn find_mzml_for_sidecar(sidecar_path: &Path) -> Option<PathBuf> {
     })
 }
 
+// The sidecar/embedded config-copy path conventions live in
+// `crate::paths` so the signer and verifier derive them from a single
+// source. Local helpers below adapt the centralized return type
+// (PathBuf) to the verifier's existing Option<PathBuf> idiom.
 fn config_path_for_sidecar(sidecar_path: &Path) -> Option<PathBuf> {
-    let name = sidecar_path.file_name()?.to_str()?;
-    let stem = name
-        .strip_suffix(".provenance.json")
-        .unwrap_or_else(|| sidecar_path.file_stem().and_then(|s| s.to_str()).unwrap_or(""));
-    Some(sidecar_path.parent()?.join(format!("{stem}.config.toml")))
+    Some(sidecar_config_path(sidecar_path))
+}
+
+/// Decode the embedded verifying_key and enforce that the
+/// payload's key_id label matches the id derived from it.
+///
+/// Returns ``(verifying_key, derived_key_id)``. Raises
+/// ``MalformedSidecar`` on any structural inconsistency. Centralized
+/// so every verify path (sidecar JSON, embedded-d, embedded-mzml)
+/// runs identical identity validation; previously each path had its
+/// own copy.
+fn validate_signer_identity(sidecar: &Sidecar) -> Result<(VerifyingKey, String)> {
+    let pubkey = public_key_from_b64(&sidecar.verifying_key)?;
+    let derived_key_id = derive_key_id(&pubkey);
+    let payload_key_id = sidecar.payload_str("key_id")?;
+    if payload_key_id != derived_key_id {
+        return Err(ProvenanceError::MalformedSidecar(format!(
+            "sidecar payload.key_id ({payload_key_id:?}) does not match the key id \
+             derived from sidecar.verifying_key ({derived_key_id:?}); this is \
+             consistent with a tampered or forged sidecar"
+        )));
+    }
+    Ok((pubkey, derived_key_id))
 }
 
 /// Verify a sidecar without any trust pinning.
@@ -213,17 +238,7 @@ pub fn verify_sidecar_with(
     let data = std::fs::read(sidecar_path)?;
     let sidecar = Sidecar::from_json_bytes(&data)?;
 
-    // Derive the actual signer identity from verifying_key, not payload.key_id.
-    let pubkey = public_key_from_b64(&sidecar.verifying_key)?;
-    let derived_key_id = derive_key_id(&pubkey);
-    let payload_key_id = sidecar.payload_str("key_id")?;
-    if payload_key_id != derived_key_id {
-        return Err(ProvenanceError::MalformedSidecar(format!(
-            "sidecar payload.key_id ({payload_key_id:?}) does not match the key id \
-             derived from sidecar.verifying_key ({derived_key_id:?}); this is \
-             consistent with a tampered or forged sidecar"
-        )));
-    }
+    let (pubkey, derived_key_id) = validate_signer_identity(&sidecar)?;
 
     // Decode the signature early so an unknown-algorithm envelope in the
     // signature field surfaces as `UnknownAlgorithm` (exit 3).
@@ -295,15 +310,7 @@ pub fn verify_embedded_d(
         )));
     }
 
-    let pubkey = public_key_from_b64(&sidecar.verifying_key)?;
-    let derived_key_id = derive_key_id(&pubkey);
-    let payload_key_id = sidecar.payload_str("key_id")?;
-    if payload_key_id != derived_key_id {
-        return Err(ProvenanceError::MalformedSidecar(format!(
-            "sidecar payload.key_id ({payload_key_id:?}) does not match the key id \
-             derived from sidecar.verifying_key ({derived_key_id:?})"
-        )));
-    }
+    let (pubkey, derived_key_id) = validate_signer_identity(&sidecar)?;
 
     let signature = signature_from_b64(&sidecar.signature)?;
     let signed_bytes = sidecar.canonical_payload();
@@ -362,15 +369,7 @@ pub fn verify_embedded_mzml(
         )));
     }
 
-    let pubkey = public_key_from_b64(&sidecar.verifying_key)?;
-    let derived_key_id = derive_key_id(&pubkey);
-    let payload_key_id = sidecar.payload_str("key_id")?;
-    if payload_key_id != derived_key_id {
-        return Err(ProvenanceError::MalformedSidecar(format!(
-            "sidecar payload.key_id ({payload_key_id:?}) does not match the key id \
-             derived from sidecar.verifying_key ({derived_key_id:?})"
-        )));
-    }
+    let (pubkey, derived_key_id) = validate_signer_identity(&sidecar)?;
 
     let signature = signature_from_b64(&sidecar.signature)?;
     let signed_bytes = sidecar.canonical_payload();
@@ -518,16 +517,11 @@ fn verify_d(sidecar_path: &Path, sidecar: &Sidecar, checks: &mut Vec<FieldCheck>
 /// Verify the .d half of a parsed sidecar against an already-known
 /// `.d` directory. Used by the embedded-d verification path.
 fn verify_d_against(d_path: &Path, sidecar: &Sidecar, checks: &mut Vec<FieldCheck>) -> Result<()> {
-    let d_name = d_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("data");
-    let stem = d_name.strip_suffix(".d").unwrap_or(d_name).to_owned();
     let parent = d_path.parent().unwrap_or_else(|| Path::new("."));
     verify_d_payload(
         sidecar,
         d_path,
-        Some(parent.join(format!("{stem}.config.toml"))),
+        Some(embedded_d_config_path(d_path)),
         parent.join("synthetic_data.db"),
         checks,
     )
@@ -639,14 +633,12 @@ fn verify_mzml_against(
     sidecar: &Sidecar,
     checks: &mut Vec<FieldCheck>,
 ) -> Result<()> {
-    let stem = mzml_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("sample")
-        .to_owned();
-    let parent = mzml_path.parent().unwrap_or_else(|| Path::new("."));
-    let conventional_config = parent.join(format!("{stem}.config.toml"));
-    verify_mzml_payload(sidecar, mzml_path, Some(conventional_config), checks)
+    verify_mzml_payload(
+        sidecar,
+        mzml_path,
+        Some(embedded_mzml_config_path(mzml_path)),
+        checks,
+    )
 }
 
 fn verify_mzml_payload(
@@ -774,23 +766,16 @@ pub enum Discovery {
     SidecarJson(PathBuf),
 }
 
-/// Locate provenance for a path, preferring embedded over JSON sidecar.
+/// If `path` resolves to an embedded-d `.d`, return its path.
 ///
-/// Returns `Ok(Some(Discovery))` when a transport resolved, `Ok(None)`
-/// when neither did (caller may report `UNSIGNED`), and `Err(...)`
-/// when the embedded probe itself failed structurally — for example
-/// because `analysis.tdf` has a `-wal`/`-journal`/`-shm` sidecar
-/// (`SqliteNotQuiescent`). Per `spec/embedded-d-v0.md` §6.2 those
-/// errors MUST propagate: silently falling back to a sibling JSON
-/// sidecar would mask a broken embed.
+/// Resolves either `path` itself (when it is the `.d`) or a unique
+/// `.d` inside `path` (the experiment-directory descent from
+/// `spec/embedded-d-v0.md` §6.1). Returns `Ok(None)` when nothing
+/// resolves OR when the resolved `.d` carries no embedded row.
 ///
-/// When `path` is a directory that is NOT itself a `.d`, this also
-/// descends into the directory looking for a unique `.d` (depth 0
-/// or 1) and probes that for embedded provenance — without which an
-/// embedded-only experiment directory would be misreported as
-/// unsigned (per §6.1).
-pub fn find_provenance_for(path: &Path) -> Result<Option<Discovery>> {
-    let candidate_d: Option<PathBuf> = if path.is_dir()
+/// Errors from the embedded probe propagate per spec §6.2.
+fn probe_embedded_d(path: &Path) -> Result<Option<PathBuf>> {
+    let candidate: Option<PathBuf> = if path.is_dir()
         && path.extension().and_then(|s| s.to_str()) == Some("d")
         && path.join("analysis.tdf").is_file()
     {
@@ -800,20 +785,19 @@ pub fn find_provenance_for(path: &Path) -> Result<Option<Discovery>> {
     } else {
         None
     };
-
-    if let Some(d) = candidate_d {
-        // Errors propagate. has_embedded_provenance returns
-        // Ok(false) for "no table or no rows" (legitimate fall-back
-        // to JSON), and Err for structural issues that the verifier
-        // would surface anyway.
-        if crate::embed_d::has_embedded_provenance(&d)? {
-            return Ok(Some(Discovery::EmbeddedD(d)));
-        }
+    match candidate {
+        Some(d) if crate::embed_d::has_embedded_provenance(&d)? => Ok(Some(d)),
+        _ => Ok(None),
     }
+}
 
-    // Embedded mzML transport: same dispatch shape. Probe an mzml
-    // directly, OR descend into a unique mzml inside a directory.
-    let candidate_mzml: Option<PathBuf> = if path.is_file()
+/// If `path` resolves to an embedded-mzml file, return its path.
+///
+/// Symmetric to [`probe_embedded_d`]: handles a direct `.mzML` path
+/// or a unique `.mzML` inside an experiment directory. Errors
+/// propagate per `spec/embedded-mzml-v0.md` §7.2.
+fn probe_embedded_mzml(path: &Path) -> Result<Option<PathBuf>> {
+    let candidate: Option<PathBuf> = if path.is_file()
         && path
             .extension()
             .and_then(|s| s.to_str())
@@ -826,13 +810,35 @@ pub fn find_provenance_for(path: &Path) -> Result<Option<Discovery>> {
     } else {
         None
     };
-
-    if let Some(mzml) = candidate_mzml {
-        if crate::embed_mzml::has_embedded_provenance(&mzml)? {
-            return Ok(Some(Discovery::EmbeddedMzml(mzml)));
-        }
+    match candidate {
+        Some(m) if crate::embed_mzml::has_embedded_provenance(&m)? => Ok(Some(m)),
+        _ => Ok(None),
     }
+}
 
+/// Locate provenance for a path, preferring embedded over JSON sidecar.
+///
+/// Returns `Ok(Some(Discovery))` when a transport resolved, `Ok(None)`
+/// when neither did (caller may report `UNSIGNED`), and `Err(...)`
+/// when an embedded probe itself failed structurally — for example
+/// because `analysis.tdf` has a `-wal`/`-journal`/`-shm` sidecar
+/// (`SqliteNotQuiescent`). Per `spec/embedded-d-v0.md` §6.2 those
+/// errors MUST propagate: silently falling back to a sibling JSON
+/// sidecar would mask a broken embed.
+///
+/// Probe order — embedded first because it is in-band and
+/// authoritative when both forms are present:
+///
+///   1. embedded-d (`.d` direct OR descent into experiment dir)
+///   2. embedded-mzml (`.mzML` direct OR descent into experiment dir)
+///   3. JSON sidecar via [`find_sidecar_for`]
+pub fn find_provenance_for(path: &Path) -> Result<Option<Discovery>> {
+    if let Some(d) = probe_embedded_d(path)? {
+        return Ok(Some(Discovery::EmbeddedD(d)));
+    }
+    if let Some(m) = probe_embedded_mzml(path)? {
+        return Ok(Some(Discovery::EmbeddedMzml(m)));
+    }
     Ok(find_sidecar_for(path).map(Discovery::SidecarJson))
 }
 
