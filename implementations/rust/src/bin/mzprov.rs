@@ -185,7 +185,16 @@ fn main() {
 }
 
 fn run_verify(path: &std::path::Path, _strict: bool, trust_opts: TrustOptions) -> i32 {
-    let verify_result = match mzprov::verify::find_provenance_for(path) {
+    // Discovery itself can fail with structural errors (e.g.
+    // SqliteNotQuiescent on a .tdf with a stale -wal). Per
+    // spec/embedded-d-v0.md §6.2 these MUST propagate as
+    // SIDECAR_ERROR — silently falling back to a sibling JSON
+    // sidecar would mask a broken embed.
+    let discovery = match mzprov::verify::find_provenance_for(path) {
+        Ok(d) => d,
+        Err(e) => return provenance_error_to_exit(&e),
+    };
+    let verify_result = match discovery {
         Some(mzprov::verify::Discovery::EmbeddedD(d)) => {
             mzprov::verify::verify_embedded_d(&d, &trust_opts)
         }

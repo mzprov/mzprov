@@ -158,18 +158,57 @@ the standard envelope rules in
 
 ## 6. Verifier dispatch
 
-When verifying a `.d`, the verifier MUST follow this order:
+When the verifier is given a path that resolves to a `.d` directory
+(either directly, or via the experiment-directory descent in §6.1),
+it MUST follow this order:
 
-1. Run the §5 reader protocol on `analysis.tdf`. If it returns a
-   non-null `sidecar_json`, that is the sidecar; proceed with
-   verification using it.
-2. Otherwise, fall back to the JSON sidecar discovery rules in
+1. Run the §5 reader protocol on `analysis.tdf`.
+2. If the reader returns a non-null `sidecar_json`, that is the
+   sidecar; proceed with verification using it.
+3. If the reader returns null (no `mzprov_provenance` table or zero
+   rows), fall back to the JSON sidecar discovery rules in
    [`sidecar-format.md`](sidecar-format.md) §8.
-3. If both produce nothing, the `.d` is `UNSIGNED` (exit code 4).
+4. If both produce nothing, the `.d` is `UNSIGNED` (exit code 4).
 
-A verifier MAY, as a defense-in-depth check, compare the embedded row
-against any sidecar JSON file also discovered in §8 and refuse on
-divergence. This is OPTIONAL in v0 and is expected to become
+### 6.1 Experiment-directory descent
+
+When the verifier is given a directory path that is NOT itself a
+`.d`, it MUST attempt to locate a unique `.d` inside it (at depth 0
+or 1, matching the conventional `{save_path}/{exp}/{exp}.d` layout)
+and, if exactly one is found, apply the dispatch in §6 to that
+`.d` *before* falling back to JSON sidecar discovery on the
+original directory. Without this descent, an experiment directory
+that contains an embedded-only `.d` (no sibling
+`*.provenance.json`) would be misreported as `UNSIGNED`.
+
+If two or more `.d` directories are found, the descent does not
+resolve and the verifier falls through to JSON sidecar discovery on
+the original directory (which has its own "unique sibling"
+disambiguation).
+
+### 6.2 Error propagation: no silent fallback
+
+If the §5 reader (or the §1 quiescence check that precedes it) raises
+an error — for example because `analysis.tdf` has a `-journal`,
+`-wal`, or `-shm` sidecar present, or the embedded table is malformed
+(more than one row, non-UTF-8 value, etc.) — the verifier MUST
+surface that error and MUST NOT silently fall back to the JSON
+sidecar transport. Embedded provenance is authoritative once it is
+present (or once the embedded probe proves the transport is broken):
+quietly accepting a sibling `*.provenance.json` in that state would
+let a malformed or stale embed be masked by a co-located JSON
+attestation that the user did not intend to be load-bearing.
+
+The reference implementations map this to `SIDECAR_ERROR` (exit
+code 3). Conforming verifiers MUST refuse equivalent behavior
+("try embedded, swallow on error, return JSON success") even when
+the resulting JSON sidecar would itself verify cleanly.
+
+### 6.3 Defense-in-depth comparison (optional)
+
+A verifier MAY, as a defense-in-depth check, compare the embedded
+row against any sidecar JSON file also discovered by §8 and refuse
+on divergence. This is OPTIONAL in v0 and is expected to become
 RECOMMENDED in a later revision.
 
 The verifier MUST NOT prefer the JSON sidecar over the embedded row

@@ -292,7 +292,36 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     json_mode = args.json
 
-    discovery = find_provenance_for(args.path)
+    # Discovery can fail with structural errors (SqliteNotQuiescent on a
+    # .tdf with stale -wal/-journal sidecars, MalformedSidecar on a
+    # multi-row embed). Per spec/embedded-d-v0.md §6.2 these MUST
+    # propagate as SIDECAR_ERROR — silently falling back to a sibling
+    # JSON sidecar would mask a broken embed.
+    try:
+        discovery = find_provenance_for(args.path)
+    except SqliteNotQuiescent as e:
+        if json_mode:
+            _emit_json(_error_to_json_dict(
+                status="error",
+                exit_code=EXIT_SIDECAR_ERROR,
+                error_type=type(e).__name__,
+                error_message=str(e),
+            ))
+        else:
+            print(f"timsim-verify: artifact error: {e}", file=sys.stderr)
+        return EXIT_SIDECAR_ERROR
+    except (MalformedSidecar, MissingArtifact) as e:
+        if json_mode:
+            _emit_json(_error_to_json_dict(
+                status="error",
+                exit_code=EXIT_SIDECAR_ERROR,
+                error_type=type(e).__name__,
+                error_message=str(e),
+            ))
+        else:
+            print(f"timsim-verify: discovery error: {e}", file=sys.stderr)
+        return EXIT_SIDECAR_ERROR
+
     if discovery is None:
         msg = (
             f"timsim-verify: no provenance sidecar found near {args.path}. "

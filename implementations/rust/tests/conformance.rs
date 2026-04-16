@@ -517,3 +517,171 @@ fn canonical_mzml_hashes_match_vectors() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Discovery-layer regressions (spec/embedded-d-v0.md §6.1, §6.2)
+// ---------------------------------------------------------------------------
+
+/// Regression: a .d with a stale `-wal` sidecar AND a sibling JSON
+/// sidecar must NOT silently verify against the JSON. The embedded
+/// probe must propagate the quiescence error (per §6.2); quietly
+/// accepting the JSON would mask a broken embed.
+#[test]
+fn not_quiescent_d_with_sibling_json_does_not_silently_verify() {
+    let tmp = tempdir();
+    let keypair = generate_keypair().unwrap();
+    write_keypair(&keypair, &tmp.join("keys")).unwrap();
+
+    // Build a .d in JSON-sidecar mode so a sibling .provenance.json exists.
+    let src = vectors_root().join("canonicalization/d/001-minimal.d");
+    let dst = tmp.join("quiet.d");
+    copy_dir(&src, &dst);
+    let config_path = tmp.join("quiet.config.toml");
+    std::fs::write(&config_path, b"name = \"quiet\"\n").unwrap();
+    let signing_key = load_private_key(&tmp.join("keys/signing_key.pem")).unwrap();
+    let _sidecar = sign_d(
+        &dst,
+        None,
+        &config_path,
+        "quiet",
+        "mzprov-rust-test",
+        "0.0.1",
+        None,
+        &signing_key,
+        false,
+    )
+    .unwrap();
+    assert!(tmp.join("quiet.provenance.json").is_file(), "JSON sidecar prerequisite");
+
+    // Plant a stale -wal sidecar next to analysis.tdf.
+    let wal = dst.join("analysis.tdf-wal");
+    std::fs::write(&wal, b"").unwrap();
+
+    let result = mzprov::verify::find_provenance_for(&dst);
+    match result {
+        Err(mzprov::errors::ProvenanceError::SqliteNotQuiescent { .. }) => {}
+        other => panic!(
+            "expected SqliteNotQuiescent from discovery (no silent JSON fallback); got {other:?}"
+        ),
+    }
+}
+
+/// Regression: an experiment directory containing an embedded-only
+/// .d (no sibling JSON sidecar) must be discovered when the user
+/// passes the experiment dir, not the .d. Without the §6.1 descent,
+/// this would be misreported as unsigned.
+#[test]
+fn embedded_only_experiment_dir_is_discovered() {
+    let tmp = tempdir();
+    let keypair = generate_keypair().unwrap();
+    write_keypair(&keypair, &tmp.join("keys")).unwrap();
+
+    let src = vectors_root().join("canonicalization/d/001-minimal.d");
+    let exp_dir = tmp.join("experiment");
+    std::fs::create_dir_all(&exp_dir).unwrap();
+    let d_path = exp_dir.join("sample.d");
+    copy_dir(&src, &d_path);
+
+    let config_path = exp_dir.join("sample.config.toml");
+    std::fs::write(&config_path, b"name = \"embed-only\"\n").unwrap();
+    let signing_key = load_private_key(&tmp.join("keys/signing_key.pem")).unwrap();
+    sign_d(
+        &d_path,
+        None,
+        &config_path,
+        "embed-only",
+        "mzprov-rust-test",
+        "0.0.1",
+        None,
+        &signing_key,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_dir(&exp_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e
+                .path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.ends_with(".provenance.json"))
+                .unwrap_or(false))
+            .count(),
+        0,
+        "test invariant: no JSON sidecar should exist"
+    );
+
+    // Discovery on the EXPERIMENT DIRECTORY (not the .d) must descend
+    // into the unique .d and find the embedded transport.
+    let discovery = mzprov::verify::find_provenance_for(&exp_dir)
+        .expect("discovery did not error")
+        .expect("discovery returned None for an embedded-only experiment dir");
+    match discovery {
+        mzprov::verify::Discovery::EmbeddedD(d) => {
+            assert_eq!(d, d_path, "embedded discovery resolved the wrong .d");
+        }
+        mzprov::verify::Discovery::SidecarJson(p) => {
+            panic!("expected EmbeddedD, got SidecarJson({})", p.display())
+        }
+    }
+
+    // And the embedded verifier must verify it.
+    let r = mzprov::verify::verify_embedded_d(&d_path, &TrustOptions::default()).unwrap();
+    assert!(r.overall_ok, "embedded-only experiment dir must verify");
+}
+
+/// Regression: when an experiment directory contains BOTH an
+/// embedded .d and a sibling JSON sidecar, discovery must prefer
+/// embedded (per spec/embedded-d-v0.md §6 — embedded is in-band and
+/// authoritative).
+#[test]
+fn experiment_dir_with_both_transports_prefers_embedded() {
+    let tmp = tempdir();
+    let keypair = generate_keypair().unwrap();
+    write_keypair(&keypair, &tmp.join("keys")).unwrap();
+
+    let src = vectors_root().join("canonicalization/d/001-minimal.d");
+    let exp_dir = tmp.join("dual");
+    std::fs::create_dir_all(&exp_dir).unwrap();
+    let d_path = exp_dir.join("dual.d");
+    copy_dir(&src, &d_path);
+
+    let config_path = exp_dir.join("dual.config.toml");
+    std::fs::write(&config_path, b"name = \"dual\"\n").unwrap();
+    let signing_key = load_private_key(&tmp.join("keys/signing_key.pem")).unwrap();
+
+    // Sign once in JSON mode and once with --embed.
+    sign_d(
+        &d_path,
+        None,
+        &config_path,
+        "dual",
+        "mzprov-rust-test",
+        "0.0.1",
+        None,
+        &signing_key,
+        false,
+    )
+    .unwrap();
+    sign_d(
+        &d_path,
+        None,
+        &config_path,
+        "dual",
+        "mzprov-rust-test",
+        "0.0.1",
+        None,
+        &signing_key,
+        true,
+    )
+    .unwrap();
+
+    let discovery = mzprov::verify::find_provenance_for(&exp_dir)
+        .expect("discovery did not error")
+        .expect("discovery returned None");
+    assert!(
+        matches!(discovery, mzprov::verify::Discovery::EmbeddedD(_)),
+        "embedded must win over JSON when both are present"
+    );
+}

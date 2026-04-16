@@ -158,6 +158,39 @@ pub fn read_embedded_provenance(d_path: &Path) -> Result<Option<Vec<u8>>> {
 }
 
 /// Cheap existence check — does the .d carry an embedded row?
+///
+/// Returns `Ok(true)` if the `mzprov_provenance` table exists with at
+/// least one row, `Ok(false)` if the table is absent or empty.
+/// Returns `Err` for structural problems that prevent the probe from
+/// running at all (`SqliteNotQuiescent` from a `-wal`/`-journal`/`-shm`
+/// sidecar, IO failures opening the database). Does NOT validate row
+/// count or row body — multi-row malformation surfaces at verify
+/// time via [`read_embedded_provenance`], matching the Python
+/// reference's behavior.
 pub fn has_embedded_provenance(d_path: &Path) -> Result<bool> {
-    Ok(read_embedded_provenance(d_path)?.is_some())
+    let tdf = tdf_path(d_path)?;
+    assert_sqlite_quiescent(&tdf)?;
+
+    let uri = format!("file:{}?mode=ro&immutable=1", tdf.display());
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
+    let conn = Connection::open_with_flags(uri, flags)
+        .map_err(|e| ProvenanceError::Canonicalization(format!("open sqlite: {e}")))?;
+
+    let exists: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1;",
+            [EMBEDDED_PROVENANCE_TABLE],
+            |row| row.get(0),
+        )
+        .ok();
+    if exists.is_none() {
+        return Ok(false);
+    }
+
+    let probe_sql = format!(
+        "SELECT 1 FROM \"{}\" LIMIT 1;",
+        EMBEDDED_PROVENANCE_TABLE
+    );
+    let any_row: Option<i64> = conn.query_row(&probe_sql, [], |row| row.get(0)).ok();
+    Ok(any_row.is_some())
 }

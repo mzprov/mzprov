@@ -250,8 +250,11 @@ def find_provenance_for(path: PathLike) -> tuple[str, Path] | None:
     """Discover provenance for a path, preferring embedded over JSON sidecar.
 
     Returns one of:
-        - ("embedded-d", d_path)     if ``path`` is a .d carrying an
-                                     embedded ``mzprov_provenance`` row.
+        - ("embedded-d", d_path)     if a .d carrying an embedded
+                                     ``mzprov_provenance`` row was
+                                     resolved (either ``path`` itself
+                                     or a unique .d inside an
+                                     experiment directory ``path``).
         - ("sidecar-json", json_path) if a JSON sidecar was discovered
                                      by the rules in ``find_sidecar_for``.
         - None                        if neither transport resolved.
@@ -259,21 +262,38 @@ def find_provenance_for(path: PathLike) -> tuple[str, Path] | None:
     The CLI uses this to pick the right verify entry point. Embedded
     is checked first because it is in-band and authoritative when both
     are present (see ``spec/embedded-d-v0.md`` §6).
+
+    When ``path`` is a directory that is NOT itself a .d, this also
+    descends into the directory looking for a unique .d (depth 0 or 1,
+    matching the conventional ``{save_path}/{exp}/{exp}.d`` layout)
+    and probes that for embedded provenance — without which an
+    embedded-only experiment directory would be misreported as
+    UNSIGNED (per ``spec/embedded-d-v0.md`` §6.1).
+
+    Errors raised by the embedded probe (``SqliteNotQuiescent`` from a
+    `-wal` / `-journal` / `-shm` sidecar, ``MalformedSidecar`` from a
+    multi-row or non-UTF-8 embed, etc.) propagate; this function
+    deliberately does NOT silently fall back to the JSON transport in
+    that case (per ``spec/embedded-d-v0.md`` §6.2). Letting a stale
+    or malformed embed be masked by a co-located JSON sidecar would
+    defeat the "embedded is authoritative" guarantee.
     """
     path = Path(path)
 
-    # Embedded transport: only meaningful for a .d directory.
+    # Embedded transport: probe a .d directly, OR descend into a
+    # unique .d when given an experiment directory. Errors propagate.
+    candidate_d: Path | None = None
     if path.is_dir() and path.suffix == ".d" and (path / "analysis.tdf").is_file():
+        candidate_d = path
+    elif path.is_dir():
+        # Re-use the verifier's artifact discovery helper so the
+        # depth-0/depth-1 layout rules stay in one place.
+        candidate_d = _find_unique_d(path)
+
+    if candidate_d is not None:
         from mzprov.embed_d import has_embedded_provenance
-        try:
-            if has_embedded_provenance(path):
-                return ("embedded-d", path)
-        except ProvenanceError:
-            # Quiescence guard or similar — treat as "no embedded
-            # provenance" for discovery purposes; the verifier will
-            # surface the same error if the user explicitly invokes
-            # the embedded path.
-            pass
+        if has_embedded_provenance(candidate_d):
+            return ("embedded-d", candidate_d)
 
     json_sidecar = find_sidecar_for(path)
     if json_sidecar is not None:

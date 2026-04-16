@@ -680,24 +680,42 @@ pub enum Discovery {
 
 /// Locate provenance for a path, preferring embedded over JSON sidecar.
 ///
-/// For `.d` directories, the embedded transport is checked first
-/// (`spec/embedded-d-v0.md` §6 — embedded is in-band and authoritative
-/// when both forms are present). For everything else this falls
-/// through to [`find_sidecar_for`].
-pub fn find_provenance_for(path: &Path) -> Option<Discovery> {
-    if path.is_dir()
+/// Returns `Ok(Some(Discovery))` when a transport resolved, `Ok(None)`
+/// when neither did (caller may report `UNSIGNED`), and `Err(...)`
+/// when the embedded probe itself failed structurally — for example
+/// because `analysis.tdf` has a `-wal`/`-journal`/`-shm` sidecar
+/// (`SqliteNotQuiescent`). Per `spec/embedded-d-v0.md` §6.2 those
+/// errors MUST propagate: silently falling back to a sibling JSON
+/// sidecar would mask a broken embed.
+///
+/// When `path` is a directory that is NOT itself a `.d`, this also
+/// descends into the directory looking for a unique `.d` (depth 0
+/// or 1) and probes that for embedded provenance — without which an
+/// embedded-only experiment directory would be misreported as
+/// unsigned (per §6.1).
+pub fn find_provenance_for(path: &Path) -> Result<Option<Discovery>> {
+    let candidate_d: Option<PathBuf> = if path.is_dir()
         && path.extension().and_then(|s| s.to_str()) == Some("d")
         && path.join("analysis.tdf").is_file()
     {
-        match crate::embed_d::has_embedded_provenance(path) {
-            Ok(true) => return Some(Discovery::EmbeddedD(path.to_path_buf())),
-            // Quiescence guard or similar — treat as "no embedded
-            // provenance" for discovery; the verifier surfaces the
-            // same error if the user invokes the embedded path.
-            Ok(false) | Err(_) => {}
+        Some(path.to_path_buf())
+    } else if path.is_dir() {
+        find_unique_d(path)
+    } else {
+        None
+    };
+
+    if let Some(d) = candidate_d {
+        // Errors propagate. has_embedded_provenance returns
+        // Ok(false) for "no table or no rows" (legitimate fall-back
+        // to JSON), and Err for structural issues that the verifier
+        // would surface anyway.
+        if crate::embed_d::has_embedded_provenance(&d)? {
+            return Ok(Some(Discovery::EmbeddedD(d)));
         }
     }
-    find_sidecar_for(path).map(Discovery::SidecarJson)
+
+    Ok(find_sidecar_for(path).map(Discovery::SidecarJson))
 }
 
 /// Discovery rule for a sidecar given a path to any of: the sidecar itself,

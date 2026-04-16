@@ -299,6 +299,106 @@ def test_tamper_d_after_embed_caught_as_hash_mismatch(
     assert rc == EXIT_HASH_MISMATCH
 
 
+def test_not_quiescent_d_with_sibling_json_does_not_silently_verify(
+    minimal_d, minimal_config_bytes, tmp_path, capsys
+):
+    """Regression: a .d with a stale -wal sidecar AND a sibling JSON
+    sidecar must NOT silently verify against the JSON. Per
+    spec/embedded-d-v0.md §6.2, embedded discovery errors MUST
+    propagate; quietly accepting the JSON would mask a broken embed.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_bytes(minimal_config_bytes)
+
+    # Sign in JSON-sidecar mode so a sibling .provenance.json exists.
+    sign_simulation_output(
+        d_path=minimal_d,
+        ground_truth_path=None,
+        config_path=config_path,
+        experiment_name="quiet_check",
+        simulator_version="0.1",
+    )
+    sidecar_json = minimal_d.parent / "quiet_check.provenance.json"
+    assert sidecar_json.is_file(), "JSON sidecar prerequisite"
+
+    # Plant a stale -wal next to analysis.tdf.
+    wal = (minimal_d / "analysis.tdf").with_name("analysis.tdf-wal")
+    wal.write_bytes(b"")
+    try:
+        rc = verify_main([str(minimal_d)])
+        assert rc == EXIT_SIDECAR_ERROR, (
+            f"expected SIDECAR_ERROR (3) for not-quiescent .d, got {rc}; "
+            "the verifier silently fell back to the JSON sidecar"
+        )
+    finally:
+        wal.unlink()
+
+
+def test_embedded_only_experiment_dir_is_discovered(
+    minimal_d, minimal_config_bytes, tmp_path, capsys
+):
+    """Regression: an experiment directory containing an embedded-only
+    .d (no sibling .provenance.json) must be discovered and verified
+    when the user passes the experiment dir, not the .d. Per
+    spec/embedded-d-v0.md §6.1 the verifier descends into a unique .d
+    for the embedded probe before falling back to JSON discovery.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_bytes(minimal_config_bytes)
+
+    sign_simulation_output(
+        d_path=minimal_d,
+        ground_truth_path=None,
+        config_path=config_path,
+        experiment_name="embed_only",
+        simulator_version="0.1",
+        embed=True,
+    )
+    # The .d's parent is the experiment directory in this test layout.
+    experiment_dir = minimal_d.parent
+    assert list(experiment_dir.glob("*.provenance.json")) == [], (
+        "test invariant: no JSON sidecar should exist"
+    )
+
+    rc = verify_main([str(experiment_dir)])
+    assert rc == EXIT_OK, f"expected VERIFIED, got exit {rc}"
+    out = capsys.readouterr().out
+    assert "VERIFIED" in out
+
+
+def test_experiment_dir_with_both_transports_prefers_embedded(
+    minimal_d, minimal_config_bytes, tmp_path
+):
+    """When both an embedded .d and a sibling JSON sidecar exist in an
+    experiment directory, discovery must prefer embedded (per
+    spec/embedded-d-v0.md §6 — embedded is in-band and authoritative).
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_bytes(minimal_config_bytes)
+
+    sign_simulation_output(
+        d_path=minimal_d,
+        ground_truth_path=None,
+        config_path=config_path,
+        experiment_name="dual2",
+        simulator_version="0.1",
+    )
+    sign_simulation_output(
+        d_path=minimal_d,
+        ground_truth_path=None,
+        config_path=config_path,
+        experiment_name="dual2",
+        simulator_version="0.1",
+        embed=True,
+    )
+
+    discovery = find_provenance_for(minimal_d.parent)
+    assert discovery is not None
+    transport, resolved = discovery
+    assert transport == "embedded-d"
+    assert resolved == minimal_d
+
+
 def test_tamper_embedded_envelope_caught(
     minimal_d, minimal_config_bytes, tmp_path
 ):
