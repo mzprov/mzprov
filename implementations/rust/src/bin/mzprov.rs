@@ -198,6 +198,9 @@ fn run_verify(path: &std::path::Path, _strict: bool, trust_opts: TrustOptions) -
         Some(mzprov::verify::Discovery::EmbeddedD(d)) => {
             mzprov::verify::verify_embedded_d(&d, &trust_opts)
         }
+        Some(mzprov::verify::Discovery::EmbeddedMzml(m)) => {
+            mzprov::verify::verify_embedded_mzml(&m, &trust_opts)
+        }
         Some(mzprov::verify::Discovery::SidecarJson(p)) => {
             verify_sidecar_with(&p, &trust_opts)
         }
@@ -322,13 +325,6 @@ fn run_sign(
             embed,
         )
     } else if is_mzml {
-        if embed {
-            eprintln!(
-                "mzprov sign: --embed is not yet supported for mzML; \
-                 currently implemented for .d only"
-            );
-            return EXIT_GENERIC;
-        }
         sign_mzml(
             path,
             config,
@@ -337,6 +333,7 @@ fn run_sign(
             tool_version,
             sidecar_override,
             &signing_key,
+            embed,
         )
     } else {
         eprintln!(

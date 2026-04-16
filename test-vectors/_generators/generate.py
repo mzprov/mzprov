@@ -415,6 +415,77 @@ def generate_d_embedded_valid() -> None:
     print(f"  [valid:OK] {out_dir.relative_to(VECTORS_ROOT)}/  (embedded)")
 
 
+def generate_mzml_embedded_valid() -> None:
+    """Build an mzML whose sidecar envelope is embedded as a userParam.
+
+    The vector is a single .mzML file containing the
+    `mzprov:provenance` userParam in fileDescription/fileContent
+    (per spec/embedded-mzml-v0.md §2). Metadata for the conformance
+    harness lives in a sibling _metadata.json because the envelope
+    is inside the mzML, not in a separate sidecar JSON.
+    """
+    name = "mzml-v0-embedded-minimal"
+    out_dir = VALID_DIR / name
+    _purge(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    mzml_path = make_minimal_mzml(out_dir, name=name)
+    config_path = out_dir / f"{name}.config.toml"
+    config_path.write_bytes(
+        b"[experiment]\n"
+        b'name = "' + name.encode("ascii") + b'"\n'
+        b'description = "mzprov v0 test vector: ' + name.encode("ascii") + b'"\n'
+    )
+
+    sign_mzml_output(
+        mzml_path=mzml_path,
+        config_path=config_path,
+        experiment_name=name,
+        tool_name="mzprov-test-vectors",
+        tool_version="0.1.0",
+        private_key_path=TEST_KEY_DIR,
+        embed=True,
+    )
+
+    metadata = {
+        "expected_result": "VERIFY",
+        "expected_exit_code": EXIT_OK,
+        "expected_failure": None,
+        "spec_section": "spec/embedded-mzml-v0.md",
+        "transport": "embedded-mzml",
+        "description": (
+            "Minimal valid mzML with the sidecar envelope embedded as a "
+            "userParam (name='mzprov:provenance') inside fileDescription/"
+            "fileContent. There is no sibling *.provenance.json. The "
+            "indexedmzML wrapper is stripped on embed (spec §4); the "
+            "output is plain mzML. Verifier MUST discover the embedded "
+            "transport, verify, and report VERIFIED. The mzML's content "
+            "hash MUST be invariant to the presence of the userParam "
+            "(slot is canonically excluded by virtue of living in "
+            "fileDescription per canonicalization-mzml-v0.md §1, §2)."
+        ),
+    }
+    (out_dir / "_metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True)
+    )
+
+    # Self-validate via the embedded-verify entry point.
+    from mzprov.verify import verify_embedded_mzml
+    result = verify_embedded_mzml(mzml_path, config_path_override=config_path)
+    if not result.overall_ok:
+        raise RuntimeError(
+            f"embedded mzml vector did not verify cleanly: {mzml_path}\n"
+            f"  signature_ok: {result.signature_ok}\n"
+            f"  checks: {[(c.name, c.status) for c in result.checks]}"
+        )
+    if result.transport != "embedded-mzml":
+        raise RuntimeError(
+            f"embedded mzml vector verified but transport was "
+            f"{result.transport!r}; expected 'embedded-mzml'"
+        )
+    print(f"  [valid:OK] {out_dir.relative_to(VECTORS_ROOT)}/  (embedded mzml)")
+
+
 def generate_mzml_paired_valid() -> None:
     out_dir, sidecar_path = _build_mzml_paired_subdir(VALID_DIR, "mzml-v0-minimal")
     blob = _read_sidecar(sidecar_path)
@@ -923,6 +994,7 @@ def main() -> int:
     generate_d_paired_valid()
     generate_d_embedded_valid()
     generate_mzml_paired_valid()
+    generate_mzml_embedded_valid()
 
     print()
     print("=== invalid .d vectors ===")

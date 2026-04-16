@@ -194,17 +194,6 @@ def main(argv: list[str] | None = None) -> int:
                 embed=args.embed,
             )
         else:  # fmt == "mzml"
-            if args.embed:
-                # mzML embedding is not implemented in this commit; it is
-                # tracked separately (spec/embedded-mzml-v0.md is the
-                # first cut). Refuse explicitly rather than silently
-                # falling through to the JSON path.
-                print(
-                    "mzprov sign: --embed is not yet supported for mzML; "
-                    "it is currently implemented for .d only",
-                    file=sys.stderr,
-                )
-                return EXIT_GENERIC
             sidecar_path = sign_mzml_output(
                 mzml_path=args.path,
                 config_path=args.config,
@@ -213,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
                 tool_version=args.tool_version,
                 sidecar_path=args.sidecar,
                 private_key_path=args.private_key,
+                embed=args.embed,
             )
     except (KeyNotFoundError, MalformedKey) as e:
         print(f"mzprov sign: key error: {e}", file=sys.stderr)

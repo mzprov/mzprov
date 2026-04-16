@@ -145,6 +145,14 @@ pub fn sign_d(
 
 /// Sign an mzML file. `config_path` is optional; when absent, the signed
 /// `config_hash` is sha256 of the empty byte string.
+///
+/// When `embed=true`, the sidecar envelope is written into the mzML
+/// itself as a `userParam` named `mzprov:provenance` inside
+/// `<fileDescription>/<fileContent>` (see `spec/embedded-mzml-v0.md`).
+/// No JSON sidecar file is produced; the returned path is the mzML
+/// itself. The output is a valid `<indexedmzML>` document with a fresh
+/// byte-offset index (re-index mode per spec §4). `sidecar_path` MUST
+/// be `None` when `embed=true`.
 #[allow(clippy::too_many_arguments)]
 pub fn sign_mzml(
     mzml_path: &Path,
@@ -154,6 +162,7 @@ pub fn sign_mzml(
     tool_version: &str,
     sidecar_path: Option<&Path>,
     signing_key: &SigningKey,
+    embed: bool,
 ) -> Result<PathBuf> {
     if !mzml_path.is_file() {
         return Err(ProvenanceError::MissingArtifact(format!(
@@ -174,25 +183,46 @@ pub fn sign_mzml(
         None => Vec::new(),
     };
 
-    let default_sidecar = {
+    if embed && sidecar_path.is_some() {
+        return Err(ProvenanceError::MissingArtifact(
+            "sidecar_path is not meaningful when embed=true; \
+             the envelope is stored inside the mzML's fileContent"
+                .into(),
+        ));
+    }
+
+    let (sidecar, config_copy_target): (PathBuf, PathBuf) = if embed {
+        // Embedded mode: the "result path" is the mzml itself; the
+        // config copy is anchored on the mzml's stem.
         let stem = mzml_path
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("sidecar");
-        mzml_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(format!("{stem}.provenance.json"))
+            .unwrap_or("sample");
+        let parent = mzml_path.parent().unwrap_or_else(|| Path::new("."));
+        (mzml_path.to_path_buf(), parent.join(format!("{stem}.config.toml")))
+    } else {
+        let default_sidecar = {
+            let stem = mzml_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("sidecar");
+            mzml_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(format!("{stem}.provenance.json"))
+        };
+        let chosen = sidecar_path.map(Path::to_path_buf).unwrap_or(default_sidecar);
+        let stem = sidecar_stem(&chosen);
+        let parent = chosen.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let cfg = parent.join(format!("{stem}.config.toml"));
+        (chosen, cfg)
     };
-    let sidecar = sidecar_path.map(Path::to_path_buf).unwrap_or(default_sidecar);
 
     let mzml_hash = canonicalize_mzml(mzml_path)?;
     let config_hash = sha256_bytes(&config_bytes);
 
     if config_path.is_some() {
-        let stem = sidecar_stem(&sidecar);
-        let parent = sidecar.parent().unwrap_or_else(|| Path::new("."));
-        copy_config_to(&parent.join(format!("{stem}.config.toml")), &config_bytes)?;
+        copy_config_to(&config_copy_target, &config_bytes)?;
     }
 
     let content_hash = compose_mzml_content_hash(&mzml_hash, &config_hash);
@@ -220,8 +250,13 @@ pub fn sign_mzml(
         signing_key,
         &verifying,
     );
-    write_atomic(&sidecar, &envelope_bytes)?;
-    Ok(sidecar)
+    if embed {
+        crate::embed_mzml::write_embedded_provenance(mzml_path, &envelope_bytes)?;
+        Ok(mzml_path.to_path_buf())
+    } else {
+        write_atomic(&sidecar, &envelope_bytes)?;
+        Ok(sidecar)
+    }
 }
 
 fn sidecar_stem(sidecar_path: &Path) -> String {

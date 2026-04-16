@@ -33,6 +33,7 @@ from mzprov.verify import (
     VerificationResult,
     find_provenance_for,
     verify_embedded_d,
+    verify_embedded_mzml,
     verify_sidecar,
 )
 
@@ -358,6 +359,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if transport == "embedded-d":
             result = verify_embedded_d(
+                sidecar_path,
+                public_key_override=args.public_key,
+                config_path_override=args.config,
+                expected_key_id=args.expected_key_id,
+                require_trusted=args.require_trusted,
+            )
+        elif transport == "embedded-mzml":
+            result = verify_embedded_mzml(
                 sidecar_path,
                 public_key_override=args.public_key,
                 config_path_override=args.config,

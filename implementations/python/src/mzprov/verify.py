@@ -255,6 +255,11 @@ def find_provenance_for(path: PathLike) -> tuple[str, Path] | None:
                                      resolved (either ``path`` itself
                                      or a unique .d inside an
                                      experiment directory ``path``).
+        - ("embedded-mzml", mzml_path) if an mzML carrying an embedded
+                                     ``mzprov:provenance`` userParam
+                                     was resolved (either ``path``
+                                     itself or a unique mzml inside an
+                                     experiment directory ``path``).
         - ("sidecar-json", json_path) if a JSON sidecar was discovered
                                      by the rules in ``find_sidecar_for``.
         - None                        if neither transport resolved.
@@ -294,6 +299,19 @@ def find_provenance_for(path: PathLike) -> tuple[str, Path] | None:
         from mzprov.embed_d import has_embedded_provenance
         if has_embedded_provenance(candidate_d):
             return ("embedded-d", candidate_d)
+
+    # Embedded mzML transport: same dispatch shape as .d. Probe an
+    # mzML directly, OR descend into a unique mzml inside a directory.
+    candidate_mzml: Path | None = None
+    if path.is_file() and path.suffix.lower() == ".mzml":
+        candidate_mzml = path
+    elif path.is_dir():
+        candidate_mzml = _find_unique_mzml(path)
+
+    if candidate_mzml is not None:
+        from mzprov.embed_mzml import has_embedded_provenance as _has_mzml_embedded
+        if _has_mzml_embedded(candidate_mzml):
+            return ("embedded-mzml", candidate_mzml)
 
     json_sidecar = find_sidecar_for(path)
     if json_sidecar is not None:
@@ -1058,6 +1076,55 @@ def _verify_mzml_sidecar(
             f"and any unique sibling .mzML)"
         )
 
+    # Conventional config copy for the JSON transport: {sidecar-stem}
+    # .config.toml next to the sidecar. Anchored on the sidecar's name,
+    # never on a payload field.
+    sidecar_stem_name = sidecar_path.name
+    if sidecar_stem_name.endswith(".provenance.json"):
+        sidecar_stem_name = sidecar_stem_name[: -len(".provenance.json")]
+    else:
+        sidecar_stem_name = sidecar_path.stem
+    conventional_config_path = sidecar_path.parent / f"{sidecar_stem_name}.config.toml"
+
+    return _verify_mzml_payload(
+        sidecar=sidecar,
+        sidecar_path=sidecar_path,
+        mzml_path=mzml_path,
+        conventional_config_path=conventional_config_path,
+        config_path_override=config_path_override,
+        derived_signer_pubkey=derived_signer_pubkey,
+        derived_signer_key_id=derived_signer_key_id,
+        expected_key_id=expected_key_id,
+        require_trusted=require_trusted,
+        trusted_registry_path=trusted_registry_path,
+        transport="sidecar-json",
+    )
+
+
+def _verify_mzml_payload(
+    *,
+    sidecar: MzmlSidecar,
+    sidecar_path: Path,
+    mzml_path: Path,
+    conventional_config_path: Path,
+    config_path_override: PathLike | None,
+    derived_signer_pubkey,
+    derived_signer_key_id: str,
+    expected_key_id: str | None,
+    require_trusted: bool,
+    trusted_registry_path: PathLike | None,
+    transport: str,
+) -> VerificationResult:
+    """Run integrity + trust checks for an already-parsed mzML sidecar.
+
+    Shared between the JSON-sidecar path and the embedded-mzml path
+    (mirror of ``_verify_d_payload``). The two paths differ only in
+    how the sidecar bytes are obtained and how the mzml / config
+    paths are derived; the field-by-field verification is identical
+    from here onward.
+    """
+    payload = sidecar.payload
+
     # Recompute the mzml content hash.
     mzml_hash = canonicalize_mzml(mzml_path)
 
@@ -1081,15 +1148,8 @@ def _verify_mzml_sidecar(
             STATUS_OK if payload.config_hash == config_check_actual else STATUS_MISMATCH
         )
     else:
-        # Conventional copy: {sidecar-stem}.config.toml next to the sidecar.
-        sidecar_stem = sidecar_path.name
-        if sidecar_stem.endswith(".provenance.json"):
-            sidecar_stem = sidecar_stem[: -len(".provenance.json")]
-        else:
-            sidecar_stem = sidecar_path.stem
-        conventional_config = sidecar_path.parent / f"{sidecar_stem}.config.toml"
-        if conventional_config.is_file():
-            config_hash = canonicalize_bytes(conventional_config.read_bytes())
+        if conventional_config_path.is_file():
+            config_hash = canonicalize_bytes(conventional_config_path.read_bytes())
             config_check_actual = _hex(config_hash)
             config_check_status = (
                 STATUS_OK if payload.config_hash == config_check_actual else STATUS_MISMATCH
@@ -1104,7 +1164,7 @@ def _verify_mzml_sidecar(
             config_check_status = STATUS_OK
         else:
             config_check_detail = (
-                f"no config file found at {conventional_config} "
+                f"no config file found at {conventional_config_path} "
                 f"(pass --config to override)"
             )
 
@@ -1197,4 +1257,101 @@ def _verify_mzml_sidecar(
         signature_ok=signature_ok,
         overall_ok=overall_ok,
         trust=trust,
+        transport=transport,
+    )
+
+
+def verify_embedded_mzml(
+    mzml_path: PathLike,
+    *,
+    public_key_override: PathLike | None = None,
+    config_path_override: PathLike | None = None,
+    expected_key_id: str | None = None,
+    require_trusted: bool = False,
+    trusted_registry_path: PathLike | None = None,
+) -> VerificationResult:
+    """Verify an mzML whose sidecar envelope is embedded as a userParam.
+
+    Reads the envelope from the ``mzprov:provenance`` userParam in
+    ``<fileDescription>/<fileContent>`` (see
+    ``spec/embedded-mzml-v0.md`` §6), then runs the same integrity +
+    trust checks as ``verify_sidecar``. Raises ``Unsigned`` if the
+    mzML carries no embedded slot — the caller (typically the CLI's
+    discovery layer) is expected to have already preferred this path
+    over the JSON sidecar fallback when an embedded slot exists.
+    """
+    from mzprov.embed_mzml import read_embedded_provenance
+
+    mzml_path = Path(mzml_path)
+    if not mzml_path.is_file():
+        raise MissingArtifact(f"mzml file does not exist: {mzml_path}")
+
+    envelope_bytes = read_embedded_provenance(mzml_path)
+    if envelope_bytes is None:
+        raise Unsigned(
+            f"no embedded provenance found in {mzml_path} "
+            f"(no mzprov:provenance userParam in fileContent)"
+        )
+
+    parsed = parse_sidecar(envelope_bytes)
+    if not isinstance(parsed, MzmlSidecar):
+        raise MalformedSidecar(
+            f"embedded provenance in {mzml_path} is not an mzML "
+            f"attestation (got type={parsed.type!r})"
+        )
+    sidecar = parsed
+    payload = sidecar.payload
+
+    # Same key_id consistency / pubkey-override checks as the JSON path.
+    try:
+        derived_signer_pubkey = public_key_from_b64(sidecar.verifying_key)
+    except (ValueError, TypeError) as e:
+        raise MalformedSidecar(
+            f"sidecar verifying_key field is not decodable: {e}"
+        ) from e
+    derived_signer_key_id = derive_key_id(derived_signer_pubkey)
+
+    if payload.key_id != derived_signer_key_id:
+        raise MalformedSidecar(
+            f"sidecar payload.key_id ({payload.key_id!r}) does not match "
+            f"the key id derived from sidecar.verifying_key "
+            f"({derived_signer_key_id!r})."
+        )
+
+    if public_key_override is not None:
+        from cryptography.hazmat.primitives import serialization
+
+        override_pubkey = load_public_key(public_key_override)
+        embedded_raw = derived_signer_pubkey.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        override_raw = override_pubkey.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        if embedded_raw != override_raw:
+            raise MalformedSidecar(
+                f"--public-key override does not match the verifying_key "
+                f"embedded in the sidecar."
+            )
+
+    # Conventional config copy for embedded mzml: ``{mzml-stem}.config.toml``
+    # next to the mzml. Mirrors the embedded-d convention.
+    conventional_config_path = mzml_path.with_name(
+        mzml_path.stem + ".config.toml"
+    )
+
+    return _verify_mzml_payload(
+        sidecar=sidecar,
+        sidecar_path=mzml_path,
+        mzml_path=mzml_path,
+        conventional_config_path=conventional_config_path,
+        config_path_override=config_path_override,
+        derived_signer_pubkey=derived_signer_pubkey,
+        derived_signer_key_id=derived_signer_key_id,
+        expected_key_id=expected_key_id,
+        require_trusted=require_trusted,
+        trusted_registry_path=trusted_registry_path,
+        transport="embedded-mzml",
     )

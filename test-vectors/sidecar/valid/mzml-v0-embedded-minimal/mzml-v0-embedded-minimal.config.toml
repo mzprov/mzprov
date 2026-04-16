@@ -1,0 +1,3 @@
+[experiment]
+name = "mzml-v0-embedded-minimal"
+description = "mzprov v0 test vector: mzml-v0-embedded-minimal"

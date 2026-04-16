@@ -283,6 +283,7 @@ def sign_mzml_output(
     tool_version: str = "unknown",
     sidecar_path: PathLike | None = None,
     private_key_path: PathLike | None = None,
+    embed: bool = False,
 ) -> Path:
     """Hash, sign, and write a provenance sidecar for an mzML file.
 
@@ -329,10 +330,25 @@ def sign_mzml_output(
     else:
         config_bytes = b""
 
-    if sidecar_path is None:
-        sidecar_path = mzml_path.with_name(mzml_path.stem + ".provenance.json")
+    if embed:
+        if sidecar_path is not None:
+            raise ValueError(
+                "sidecar_path is not meaningful when embed=True; "
+                "the envelope is stored inside the mzML's fileContent"
+            )
+        # Config copy convention for embedded mzml: ``{mzml_stem}.config.toml``
+        # next to the mzml. The verifier rederives this path from the mzml
+        # location so it never depends on a payload field.
+        sidecar_path = mzml_path  # the "result path" returned to the caller
+        config_copy_target = mzml_path.with_name(
+            mzml_path.stem + ".config.toml"
+        )
     else:
-        sidecar_path = Path(sidecar_path)
+        if sidecar_path is None:
+            sidecar_path = mzml_path.with_name(mzml_path.stem + ".provenance.json")
+        else:
+            sidecar_path = Path(sidecar_path)
+        config_copy_target = None  # set below from sidecar stem
 
     # 1. Compute component hashes from disk.
     mzml_hash = canonicalize_mzml(mzml_path)
@@ -340,16 +356,19 @@ def sign_mzml_output(
 
     # 1a. Copy the config bytes (if any) into the experiment directory
     # so the verifier has something to check the signed config_hash
-    # against. Same convention as the .d signing path.
+    # against. Same convention as the .d signing path: the copy is
+    # anchored on the artifact's name (or the sidecar's stem in the
+    # JSON-transport case), never on a payload field.
     if config_path is not None:
-        sidecar_stem = sidecar_path.name
-        if sidecar_stem.endswith(".provenance.json"):
-            sidecar_stem = sidecar_stem[: -len(".provenance.json")]
-        else:
-            sidecar_stem = sidecar_path.stem
-        config_copy_path = sidecar_path.parent / f"{sidecar_stem}.config.toml"
-        config_copy_path.parent.mkdir(parents=True, exist_ok=True)
-        config_copy_path.write_bytes(config_bytes)
+        if config_copy_target is None:
+            sidecar_stem = sidecar_path.name
+            if sidecar_stem.endswith(".provenance.json"):
+                sidecar_stem = sidecar_stem[: -len(".provenance.json")]
+            else:
+                sidecar_stem = sidecar_path.stem
+            config_copy_target = sidecar_path.parent / f"{sidecar_stem}.config.toml"
+        config_copy_target.parent.mkdir(parents=True, exist_ok=True)
+        config_copy_target.write_bytes(config_bytes)
 
     # 2. Compose the single content hash.
     content_hash = compose_mzml_content_hash(
@@ -384,6 +403,11 @@ def sign_mzml_output(
         type=ATTESTATION_TYPE_MZML,
     )
 
-    # 6. Write atomically.
-    write_sidecar_atomic(sidecar.to_json_bytes(), sidecar_path)
+    # 6. Write the envelope to its transport.
+    envelope_bytes = sidecar.to_json_bytes()
+    if embed:
+        from mzprov.embed_mzml import write_embedded_provenance
+        write_embedded_provenance(mzml_path, envelope_bytes)
+        return mzml_path
+    write_sidecar_atomic(envelope_bytes, sidecar_path)
     return sidecar_path

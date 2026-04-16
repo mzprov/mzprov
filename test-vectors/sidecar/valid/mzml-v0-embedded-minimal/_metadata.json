@@ -1,0 +1,8 @@
+{
+  "description": "Minimal valid mzML with the sidecar envelope embedded as a userParam (name='mzprov:provenance') inside fileDescription/fileContent. There is no sibling *.provenance.json. The indexedmzML wrapper is stripped on embed (spec \u00a74); the output is plain mzML. Verifier MUST discover the embedded transport, verify, and report VERIFIED. The mzML's content hash MUST be invariant to the presence of the userParam (slot is canonically excluded by virtue of living in fileDescription per canonicalization-mzml-v0.md \u00a71, \u00a72).",
+  "expected_exit_code": 0,
+  "expected_failure": null,
+  "expected_result": "VERIFY",
+  "spec_section": "spec/embedded-mzml-v0.md",
+  "transport": "embedded-mzml"
+}

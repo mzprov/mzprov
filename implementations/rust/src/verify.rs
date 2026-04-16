@@ -91,6 +91,8 @@ pub enum Transport {
     SidecarJson,
     /// In-band row in `analysis.tdf`'s `mzprov_provenance` table.
     EmbeddedD,
+    /// In-band userParam in mzML's `<fileDescription>/<fileContent>`.
+    EmbeddedMzml,
 }
 
 #[derive(Debug, Clone)]
@@ -326,6 +328,73 @@ pub fn verify_embedded_d(
     })
 }
 
+/// Verify an mzML whose sidecar envelope is embedded as a userParam.
+///
+/// Reads the envelope from the `mzprov:provenance` userParam in
+/// `<fileDescription>/<fileContent>` per `spec/embedded-mzml-v0.md`
+/// §6, then runs the same integrity + trust checks as
+/// [`verify_sidecar`]. Returns
+/// [`ProvenanceError::MissingArtifact`] if the mzML carries no
+/// embedded userParam.
+pub fn verify_embedded_mzml(
+    mzml_path: &Path,
+    trust_opts: &TrustOptions,
+) -> Result<VerificationResult> {
+    if !mzml_path.is_file() {
+        return Err(ProvenanceError::MissingArtifact(format!(
+            "mzml file does not exist: {}",
+            mzml_path.display()
+        )));
+    }
+
+    let envelope = crate::embed_mzml::read_embedded_provenance(mzml_path)?.ok_or_else(|| {
+        ProvenanceError::MissingArtifact(format!(
+            "no embedded provenance found in {}",
+            mzml_path.display()
+        ))
+    })?;
+
+    let sidecar = Sidecar::from_json_bytes(&envelope)?;
+    if sidecar.type_tag != AttestationType::Mzml {
+        return Err(ProvenanceError::MalformedSidecar(format!(
+            "embedded provenance in {} is not an mzML attestation",
+            mzml_path.display()
+        )));
+    }
+
+    let pubkey = public_key_from_b64(&sidecar.verifying_key)?;
+    let derived_key_id = derive_key_id(&pubkey);
+    let payload_key_id = sidecar.payload_str("key_id")?;
+    if payload_key_id != derived_key_id {
+        return Err(ProvenanceError::MalformedSidecar(format!(
+            "sidecar payload.key_id ({payload_key_id:?}) does not match the key id \
+             derived from sidecar.verifying_key ({derived_key_id:?})"
+        )));
+    }
+
+    let signature = signature_from_b64(&sidecar.signature)?;
+    let signed_bytes = sidecar.canonical_payload();
+    let signature_ok = verify_signature(&pubkey, &signed_bytes, &signature);
+
+    let mut checks: Vec<FieldCheck> = Vec::new();
+    verify_mzml_against(mzml_path, &sidecar, &mut checks)?;
+
+    let all_fields_ok = checks.iter().all(|c| c.status == CheckStatus::Ok);
+    let trust = evaluate_trust(&derived_key_id, &pubkey, trust_opts);
+    let overall_ok = signature_ok && all_fields_ok && trust.ok();
+
+    Ok(VerificationResult {
+        sidecar_path: mzml_path.to_path_buf(),
+        type_tag: AttestationType::Mzml,
+        signature_ok,
+        overall_ok,
+        checks,
+        derived_key_id,
+        trust,
+        transport: Transport::EmbeddedMzml,
+    })
+}
+
 fn evaluate_trust(
     actual_key_id: &str,
     actual_pubkey: &VerifyingKey,
@@ -555,7 +624,38 @@ fn verify_mzml(
             sidecar_path.display()
         ))
     })?;
-    let mzml_hash = canonicalize_mzml(&mzml_path)?;
+    verify_mzml_payload(
+        sidecar,
+        &mzml_path,
+        config_path_for_sidecar(sidecar_path),
+        checks,
+    )
+}
+
+/// Verify the mzML half of a parsed sidecar against an already-known
+/// mzml file. Used by the embedded-mzml verification path.
+fn verify_mzml_against(
+    mzml_path: &Path,
+    sidecar: &Sidecar,
+    checks: &mut Vec<FieldCheck>,
+) -> Result<()> {
+    let stem = mzml_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("sample")
+        .to_owned();
+    let parent = mzml_path.parent().unwrap_or_else(|| Path::new("."));
+    let conventional_config = parent.join(format!("{stem}.config.toml"));
+    verify_mzml_payload(sidecar, mzml_path, Some(conventional_config), checks)
+}
+
+fn verify_mzml_payload(
+    sidecar: &Sidecar,
+    mzml_path: &Path,
+    config_path: Option<PathBuf>,
+    checks: &mut Vec<FieldCheck>,
+) -> Result<()> {
+    let mzml_hash = canonicalize_mzml(mzml_path)?;
 
     let expected_m = sidecar.payload_str("mzml_content_hash")?.to_owned();
     let actual_m = encode_hash_field(&mzml_hash);
@@ -575,7 +675,7 @@ fn verify_mzml(
 
     let expected_cfg = sidecar.payload_str("config_hash")?.to_owned();
     let (cfg_hash_opt, cfg_actual, cfg_status, cfg_detail) =
-        resolve_config_hash(sidecar_path, &expected_cfg);
+        resolve_config_hash_at(config_path.as_deref(), &expected_cfg);
     push_check(
         checks,
         "config_hash",
@@ -613,13 +713,6 @@ fn verify_mzml(
     // field surfaces as SIDECAR_ERROR even when the file is absent.
     let _ = decode_hash_field(&expected_cfg)?;
     Ok(())
-}
-
-fn resolve_config_hash(
-    sidecar_path: &Path,
-    expected_cfg: &str,
-) -> (Option<[u8; 32]>, String, CheckStatus, String) {
-    resolve_config_hash_at(config_path_for_sidecar(sidecar_path).as_deref(), expected_cfg)
 }
 
 fn resolve_config_hash_at(
@@ -674,6 +767,9 @@ fn resolve_config_hash_at(
 pub enum Discovery {
     /// Provenance is embedded in `.d`/analysis.tdf as an `mzprov_provenance` row.
     EmbeddedD(PathBuf),
+    /// Provenance is embedded in mzml's fileDescription as a
+    /// `mzprov:provenance` userParam.
+    EmbeddedMzml(PathBuf),
     /// Provenance is a JSON sidecar at the given path.
     SidecarJson(PathBuf),
 }
@@ -715,7 +811,51 @@ pub fn find_provenance_for(path: &Path) -> Result<Option<Discovery>> {
         }
     }
 
+    // Embedded mzML transport: same dispatch shape. Probe an mzml
+    // directly, OR descend into a unique mzml inside a directory.
+    let candidate_mzml: Option<PathBuf> = if path.is_file()
+        && path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.eq_ignore_ascii_case("mzml"))
+            .unwrap_or(false)
+    {
+        Some(path.to_path_buf())
+    } else if path.is_dir() {
+        find_unique_mzml_in_dir(path)
+    } else {
+        None
+    };
+
+    if let Some(mzml) = candidate_mzml {
+        if crate::embed_mzml::has_embedded_provenance(&mzml)? {
+            return Ok(Some(Discovery::EmbeddedMzml(mzml)));
+        }
+    }
+
     Ok(find_sidecar_for(path).map(Discovery::SidecarJson))
+}
+
+fn find_unique_mzml_in_dir(root: &Path) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_file()
+                && p.extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.eq_ignore_ascii_case("mzml"))
+                    .unwrap_or(false)
+            {
+                candidates.push(p);
+            }
+        }
+    }
+    if candidates.len() == 1 {
+        Some(candidates.remove(0))
+    } else {
+        None
+    }
 }
 
 /// Discovery rule for a sidecar given a path to any of: the sidecar itself,

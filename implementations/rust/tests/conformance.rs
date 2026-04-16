@@ -66,15 +66,19 @@ fn expected_exit_code(sidecar_path: &Path) -> i32 {
 }
 
 /// One vector subdirectory under `sidecar/valid/` or `sidecar/invalid/`.
-/// Embedded-d vectors have no JSON sidecar; their `_metadata` lives in
+/// Embedded vectors have no JSON sidecar; their `_metadata` lives in
 /// a sibling `_metadata.json` file because the envelope is inside the
-/// .d's SQLite.
+/// artifact (`.d` SQLite or mzML userParam).
 enum VectorEntry {
     Json {
         sidecar: PathBuf,
     },
     EmbeddedD {
         d_path: PathBuf,
+        metadata: serde_json::Value,
+    },
+    EmbeddedMzml {
+        mzml_path: PathBuf,
         metadata: serde_json::Value,
     },
 }
@@ -85,16 +89,23 @@ fn classify_vector(dir: &Path) -> VectorEntry {
     if sidecar.is_file() {
         return VectorEntry::Json { sidecar };
     }
-    let d_path = dir.join(format!("{name}.d"));
     let metadata_path = dir.join("_metadata.json");
+    let d_path = dir.join(format!("{name}.d"));
     if d_path.is_dir() && metadata_path.is_file() {
         let txt = std::fs::read_to_string(&metadata_path).expect("read embedded metadata");
         let metadata: serde_json::Value =
             serde_json::from_str(&txt).expect("parse embedded metadata");
         return VectorEntry::EmbeddedD { d_path, metadata };
     }
+    let mzml_path = dir.join(format!("{name}.mzML"));
+    if mzml_path.is_file() && metadata_path.is_file() {
+        let txt = std::fs::read_to_string(&metadata_path).expect("read embedded metadata");
+        let metadata: serde_json::Value =
+            serde_json::from_str(&txt).expect("parse embedded metadata");
+        return VectorEntry::EmbeddedMzml { mzml_path, metadata };
+    }
     panic!(
-        "vector {} has neither a JSON sidecar nor an embedded .d + _metadata.json",
+        "vector {} has none of: JSON sidecar, embedded .d + _metadata.json, embedded mzml + _metadata.json",
         dir.display()
     );
 }
@@ -147,6 +158,25 @@ fn valid_vectors_verify_with_exit_zero() {
             assert!(r.checks.iter().all(|c| c.status == CheckStatus::Ok));
             assert!(matches!(r.transport, mzprov::verify::Transport::EmbeddedD));
         }
+        VectorEntry::EmbeddedMzml { mzml_path, metadata } => {
+            let expected = metadata
+                .get("expected_exit_code")
+                .and_then(|e| e.as_i64())
+                .expect("metadata missing expected_exit_code") as i32;
+            let r = mzprov::verify::verify_embedded_mzml(mzml_path, &TrustOptions::default())
+                .expect("embedded mzml vector must read");
+            let got = if r.overall_ok { 0 } else { 1 };
+            assert_eq!(
+                got,
+                expected,
+                "embedded mzml vector {}: expected {expected}, got {got}",
+                mzml_path.display()
+            );
+            assert!(r.overall_ok, "embedded mzml vector must verify: {}", mzml_path.display());
+            assert!(r.signature_ok);
+            assert!(r.checks.iter().all(|c| c.status == CheckStatus::Ok));
+            assert!(matches!(r.transport, mzprov::verify::Transport::EmbeddedMzml));
+        }
     });
 }
 
@@ -179,6 +209,24 @@ fn invalid_vectors_reject_with_declared_exit_code() {
                 expected,
                 "embedded vector {}: expected exit {expected}, got {got}",
                 d_path.display()
+            );
+        }
+        VectorEntry::EmbeddedMzml { mzml_path, metadata } => {
+            let expected = metadata
+                .get("expected_exit_code")
+                .and_then(|e| e.as_i64())
+                .expect("metadata missing expected_exit_code") as i32;
+            let r = mzprov::verify::verify_embedded_mzml(mzml_path, &TrustOptions::default());
+            let got = match r {
+                Ok(res) if res.overall_ok => 0,
+                Ok(_) => 5,
+                Err(e) => map_to_exit(Err(e)),
+            };
+            assert_eq!(
+                got,
+                expected,
+                "embedded mzml vector {}: expected exit {expected}, got {got}",
+                mzml_path.display()
             );
         }
     });
@@ -327,6 +375,7 @@ fn round_trip_sign_then_verify_mzml() {
         "0.0.1",
         None,
         &signing_key,
+        false,
     )
     .unwrap();
 
@@ -334,6 +383,50 @@ fn round_trip_sign_then_verify_mzml() {
     assert!(r.overall_ok, "round-trip mzml sidecar must verify");
     assert!(r.signature_ok);
     assert_eq!(r.derived_key_id, keypair.key_id);
+}
+
+/// Round-trip embed-then-verify for mzML using the mzdata-backed
+/// writer. Asserts exclusion correctness on the live file too: the
+/// canonical hash MUST be unchanged across the write.
+#[test]
+fn round_trip_sign_embedded_then_verify_mzml() {
+    let tmp = tempdir();
+    let keypair = generate_keypair().unwrap();
+    write_keypair(&keypair, &tmp.join("keys")).unwrap();
+
+    let src = vectors_root().join("canonicalization/mzml/001-indented.mzML");
+    let dst = tmp.join("sample.mzML");
+    std::fs::copy(&src, &dst).unwrap();
+
+    let pre_hash = canonicalize_mzml(&dst).expect("hash before sign");
+
+    let signing_key = load_private_key(&tmp.join("keys/signing_key.pem")).unwrap();
+    let result_path = sign_mzml(
+        &dst,
+        None,
+        "round-trip-embedded",
+        "mzprov-rust-test",
+        "0.0.1",
+        None,
+        &signing_key,
+        true,
+    )
+    .unwrap();
+    assert_eq!(result_path, dst, "embed mode returns the mzml path itself");
+
+    // Exclusion correctness on the live file.
+    let post_hash = canonicalize_mzml(&dst).expect("hash after sign");
+    assert_eq!(
+        pre_hash, post_hash,
+        "embed must not perturb the canonical hash"
+    );
+
+    let r = mzprov::verify::verify_embedded_mzml(&dst, &TrustOptions::default())
+        .expect("verify embedded after sign");
+    assert!(r.overall_ok, "round-trip embedded mzml must verify");
+    assert!(r.signature_ok);
+    assert_eq!(r.derived_key_id, keypair.key_id);
+    assert!(matches!(r.transport, mzprov::verify::Transport::EmbeddedMzml));
 }
 
 #[test]
@@ -621,9 +714,7 @@ fn embedded_only_experiment_dir_is_discovered() {
         mzprov::verify::Discovery::EmbeddedD(d) => {
             assert_eq!(d, d_path, "embedded discovery resolved the wrong .d");
         }
-        mzprov::verify::Discovery::SidecarJson(p) => {
-            panic!("expected EmbeddedD, got SidecarJson({})", p.display())
-        }
+        other => panic!("expected EmbeddedD, got {other:?}"),
     }
 
     // And the embedded verifier must verify it.

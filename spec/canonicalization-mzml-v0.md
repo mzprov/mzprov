@@ -58,6 +58,15 @@ from the reference implementation and break interop):
 These exclusions are deliberate and recorded as candidate v1 work in
 [`v1-draft/`](v1-draft/).
 
+The `<fileDescription>` exclusion above is what makes the embedded
+mzML transport defined in [`embedded-mzml-v0.md`](embedded-mzml-v0.md)
+canonically free: a `userParam` with the reserved name
+`mzprov:provenance` inside `<fileDescription>/<fileContent>` is
+covered by the §2 exclusion and does not perturb the canonical hash.
+A future revision that brings any subset of `<fileDescription>` into
+the canonical hash MUST keep the reserved `mzprov:provenance` slot
+explicitly excluded so embed-after-hash stays well-defined.
+
 ## 3. What v0 explicitly refuses
 
 Implementations MUST refuse mzML files with any of the following
