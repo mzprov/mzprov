@@ -51,8 +51,10 @@ __all__ = [
     "UnknownVersion",
     "canonicalize_d",
     "canonicalize_mzml",
+    "canonicalize_raw",
     "canonicalize_sqlite",
     "sign_mzml_output",
+    "sign_raw_output",
     "sign_simulation_output",
     "verify_sidecar",
 ]
@@ -87,6 +89,20 @@ def canonicalize_mzml(mzml_path):
     return _impl(mzml_path)
 
 
+# Same name-collision guard as canonicalize_mzml above: the submodule
+# ``mzprov/canonicalize_raw.py`` would otherwise shadow the function
+# below the first time anything imports from it. Force the submodule
+# import here, before the ``def``, so the function wins as the package
+# attribute and subsequent submodule imports hit ``sys.modules``.
+import mzprov.canonicalize_raw as _ensure_raw_submodule_imported  # noqa: F401
+del _ensure_raw_submodule_imported
+
+
+def canonicalize_raw(raw_path):
+    from mzprov.canonicalize_raw import canonicalize_raw as _impl
+    return _impl(raw_path)
+
+
 def sign_simulation_output(*args, **kwargs):
     from mzprov.sign import sign_simulation_output as _impl
     return _impl(*args, **kwargs)
@@ -94,6 +110,11 @@ def sign_simulation_output(*args, **kwargs):
 
 def sign_mzml_output(*args, **kwargs):
     from mzprov.sign import sign_mzml_output as _impl
+    return _impl(*args, **kwargs)
+
+
+def sign_raw_output(*args, **kwargs):
+    from mzprov.sign import sign_raw_output as _impl
     return _impl(*args, **kwargs)
 
 

@@ -59,7 +59,9 @@ from mzprov import (
     UnknownVersion,
     canonicalize_d,
     canonicalize_mzml,
+    canonicalize_raw,
     sign_mzml_output,
+    sign_raw_output,
     sign_simulation_output,
     verify_sidecar,
 )
@@ -89,6 +91,32 @@ INVALID_DIR = SIDECAR_DIR / "invalid"
 CANON_DIR = VECTORS_ROOT / "canonicalization"
 CANON_D_DIR = CANON_DIR / "d"
 CANON_MZML_DIR = CANON_DIR / "mzml"
+CANON_RAW_DIR = CANON_DIR / "raw"
+
+
+# Deterministic dummy ``.raw`` bytes. A Thermo ``.raw`` is canonicalized as
+# an opaque whole-file SHA-256, so the only requirement for a stable vector
+# is that the bytes are fixed across regenerations. These bytes are NOT a
+# real Thermo container — they only need to exercise the streaming opaque
+# hash and be byte-stable. The header mimics the Thermo magic just enough to
+# be recognisable; everything after is arbitrary fixed filler.
+_DUMMY_RAW_BYTES = (
+    b"\x01\xa1F\x00i\x00n\x00n\x00i\x00g\x00a\x00n\x00"  # pseudo "Finnigan" magic
+    + bytes(range(256)) * 8
+    + b"mzprov-test-vectors/raw-v0-opaque-fixture\x00"
+)
+
+
+def make_minimal_raw(tmp_path: Path, *, name: str = "001-minimal") -> Path:
+    """Write a small deterministic dummy ``.raw`` file and return its path.
+
+    The bytes are fixed (see ``_DUMMY_RAW_BYTES``) so the opaque whole-file
+    canonical hash is byte-stable across regenerations.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    raw_path = tmp_path / f"{name}.raw"
+    raw_path.write_bytes(_DUMMY_RAW_BYTES)
+    return raw_path
 
 
 # Reference exit codes used in _metadata. These are the values mzprov-verify
@@ -319,6 +347,31 @@ def _build_mzml_paired_subdir(parent: Path, name: str) -> tuple[Path, Path]:
     return out_dir, sidecar_path
 
 
+def _build_raw_paired_subdir(parent: Path, name: str) -> tuple[Path, Path]:
+    out_dir = parent / name
+    _purge(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_path = make_minimal_raw(out_dir, name=name)
+    config_path = out_dir / f"{name}.config.toml"
+    config_path.write_bytes(
+        b"[experiment]\n"
+        b'name = "' + name.encode("ascii") + b'"\n'
+        b'description = "mzprov v0 test vector: ' + name.encode("ascii") + b'"\n'
+    )
+
+    sidecar_path = sign_raw_output(
+        raw_path=raw_path,
+        config_path=config_path,
+        experiment_name=name,
+        tool_name="mzprov-test-vectors",
+        tool_version="0.1.0",
+        sidecar_path=out_dir / f"{name}.provenance.json",
+        private_key_path=TEST_KEY_DIR,
+    )
+    return out_dir, sidecar_path
+
+
 # ---------------------------------------------------------------------------
 # Valid vectors
 # ---------------------------------------------------------------------------
@@ -499,6 +552,28 @@ def generate_mzml_paired_valid() -> None:
             "Minimal valid mzML sidecar paired with its source mzML file and "
             "config copy, produced by the Python reference implementation. "
             "Verifier MUST report VERIFIED."
+        ),
+    )
+    _write_sidecar(blob, sidecar_path)
+    _expect_verify_ok(sidecar_path)
+    print(f"  [valid:OK] {out_dir.relative_to(VECTORS_ROOT)}/")
+
+
+def generate_raw_paired_valid() -> None:
+    out_dir, sidecar_path = _build_raw_paired_subdir(VALID_DIR, "raw-v0-minimal")
+    blob = _read_sidecar(sidecar_path)
+    _attach_metadata(
+        blob,
+        expected_result="VERIFY",
+        expected_exit_code=EXIT_OK,
+        expected_failure=None,
+        spec_section="spec/canonicalization-raw-v0.md",
+        description=(
+            "Minimal valid Thermo .raw sidecar paired with its source .raw "
+            "file (an opaque deterministic fixture) and config copy, "
+            "produced by the Python reference implementation. The .raw is "
+            "hashed as an opaque whole-file SHA-256 and the attestation is "
+            "sidecar-only (no embed transport). Verifier MUST report VERIFIED."
         ),
     )
     _write_sidecar(blob, sidecar_path)
@@ -965,6 +1040,40 @@ def generate_canonicalization_mzml() -> None:
     )
 
 
+def generate_canonicalization_raw() -> None:
+    _purge(CANON_RAW_DIR)
+    CANON_RAW_DIR.mkdir(parents=True, exist_ok=True)
+
+    raw_path = make_minimal_raw(CANON_RAW_DIR, name="001-minimal")
+    canonical_hash = canonicalize_raw(raw_path)
+    (CANON_RAW_DIR / "001-minimal.canonical-hash.txt").write_text(
+        "sha256:" + canonical_hash.hex() + "\n"
+    )
+    print(f"  [canon:raw] 001-minimal -> sha256:{canonical_hash.hex()[:16]}...")
+
+    (CANON_RAW_DIR / "README.md").write_text(
+        "# canonicalization/raw/ — Thermo .raw canonical-hash fixtures\n"
+        "\n"
+        "Each `NNN-name.raw` file ships with `NNN-name.canonical-hash.txt`\n"
+        "containing the expected canonical hash, as `sha256:hex\\n`. A\n"
+        "conforming implementation MUST run its `.raw` canonicalizer on the\n"
+        "input and produce a hash byte-identical to the expected value.\n"
+        "\n"
+        "Unlike the mzML path, the `.raw` canonicalization is an **opaque\n"
+        "whole-file SHA-256** with a domain prefix (per\n"
+        "`spec/canonicalization-raw-v0.md`): there is no structural\n"
+        "normalization, so the hash is sensitive to every byte. The fixture\n"
+        "below is a small deterministic dummy `.raw` (NOT a real Thermo\n"
+        "container) whose only contract is byte-stability.\n"
+        "\n"
+        "## Fixtures\n"
+        "\n"
+        "| Fixture | Description | Property |\n"
+        "|---|---|---|\n"
+        "| `001-minimal.raw` | small deterministic opaque byte fixture | baseline opaque whole-file hash |\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Top-level driver
 # ---------------------------------------------------------------------------
@@ -995,6 +1104,7 @@ def main() -> int:
     generate_d_embedded_valid()
     generate_mzml_paired_valid()
     generate_mzml_embedded_valid()
+    generate_raw_paired_valid()
 
     print()
     print("=== invalid .d vectors ===")
@@ -1017,6 +1127,7 @@ def main() -> int:
     print("=== canonicalization fixtures ===")
     generate_canonicalization_d()
     generate_canonicalization_mzml()
+    generate_canonicalization_raw()
 
     print()
     print("=== done ===")

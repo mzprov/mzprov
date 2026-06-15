@@ -1,0 +1,23 @@
+{
+  "_metadata": {
+    "description": "Minimal valid Thermo .raw sidecar paired with its source .raw file (an opaque deterministic fixture) and config copy, produced by the Python reference implementation. The .raw is hashed as an opaque whole-file SHA-256 and the attestation is sidecar-only (no embed transport). Verifier MUST report VERIFIED.",
+    "expected_exit_code": 0,
+    "expected_failure": null,
+    "expected_result": "VERIFY",
+    "spec_section": "spec/canonicalization-raw-v0.md"
+  },
+  "payload": {
+    "canonicalization_version": "v0",
+    "config_hash": "sha256:b4a982e4ec91f1c529fef607d8668dc22dcfaea5fc05bb0d90d9e7c48a8753fa",
+    "content_hash": "sha256:79fcb393f0ac0a65d4433fe522b47ce59edda8a201641d85640a425412aa25e2",
+    "experiment_name": "raw-v0-minimal",
+    "key_id": "timsim-local-umdyuiienlum7prj",
+    "raw_content_hash": "sha256:4443ed457957006a9b04851ac2312fae09053db83ae4fca25bc70c5fa07c00c0",
+    "timestamp_utc": "2026-06-15T10:02:15.585Z",
+    "tool_name": "mzprov-test-vectors",
+    "tool_version": "0.1.0"
+  },
+  "signature": "ed25519:base64:/xgp+3iGg7ORORCS511EZQVvEGp2yFKnnlS2Ws0o5Epc+Y27ZLBqypD26qFe9g0VH5JarXf4yytcaT86Ar6yBA==",
+  "type": "timsim.provenance.raw.v0",
+  "verifying_key": "ed25519:base64:mhoKFo9An8jHJAuc/hzJQjUCTPDCS7MwQsIyXXz+mxc="
+}

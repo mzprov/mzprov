@@ -15,6 +15,7 @@
 
 pub mod canonicalize_d;
 pub mod canonicalize_mzml;
+pub mod canonicalize_raw;
 pub mod embed_d;
 pub mod embed_mzml;
 pub mod envelope;

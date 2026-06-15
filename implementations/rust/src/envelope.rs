@@ -16,6 +16,7 @@ use crate::errors::{ProvenanceError, Result};
 
 pub const ATTESTATION_TYPE_D: &str = "timsim.provenance.v0";
 pub const ATTESTATION_TYPE_MZML: &str = "timsim.provenance.mzml.v0";
+pub const ATTESTATION_TYPE_RAW: &str = "timsim.provenance.raw.v0";
 pub const SUPPORTED_CANONICALIZATION: &str = "v0";
 
 const D_REQUIRED: &[&str] = &[
@@ -43,10 +44,23 @@ const MZML_REQUIRED: &[&str] = &[
     "canonicalization_version",
 ];
 
+const RAW_REQUIRED: &[&str] = &[
+    "tool_name",
+    "tool_version",
+    "experiment_name",
+    "config_hash",
+    "raw_content_hash",
+    "content_hash",
+    "timestamp_utc",
+    "key_id",
+    "canonicalization_version",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttestationType {
     D,
     Mzml,
+    Raw,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +87,7 @@ impl Sidecar {
         let type_tag = match obj.get("type").and_then(Value::as_str) {
             Some(ATTESTATION_TYPE_D) => AttestationType::D,
             Some(ATTESTATION_TYPE_MZML) => AttestationType::Mzml,
+            Some(ATTESTATION_TYPE_RAW) => AttestationType::Raw,
             Some(other) => {
                 return Err(ProvenanceError::UnknownVersion(format!(
                     "sidecar type {other:?} is not a recognized attestation type"
@@ -115,6 +130,7 @@ impl Sidecar {
         let required: &[&str] = match type_tag {
             AttestationType::D => D_REQUIRED,
             AttestationType::Mzml => MZML_REQUIRED,
+            AttestationType::Raw => RAW_REQUIRED,
         };
         for field in required {
             if !payload.contains_key(*field) {
