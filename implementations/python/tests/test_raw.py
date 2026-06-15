@@ -229,3 +229,56 @@ def test_verify_raw_missing_artifact_raises(tmp_path):
     raw_path.unlink()
     with pytest.raises(MissingArtifact):
         verify_sidecar(sidecar_path)
+
+
+def test_sign_raw_rejects_mismatched_sidecar_path(tmp_path):
+    """A custom sidecar_path that wouldn't pair back to the .raw at verify time is
+    rejected, so an attestation can never describe one file but verify another."""
+    raw_path = _make_dummy_raw(tmp_path, name="real")
+    key_path = _write_temp_key(tmp_path)
+    # Wrong stem: verifier would look for 'other.raw', not 'real.raw'.
+    with pytest.raises(ValueError):
+        sign_raw_output(raw_path=raw_path, config_path=None, experiment_name="x",
+                        sidecar_path=tmp_path / "other.provenance.json", private_key_path=key_path)
+    # Wrong directory: verifier looks beside the sidecar, not beside the .raw.
+    (tmp_path / "sub").mkdir()
+    with pytest.raises(ValueError):
+        sign_raw_output(raw_path=raw_path, config_path=None, experiment_name="x",
+                        sidecar_path=tmp_path / "sub" / "real.provenance.json", private_key_path=key_path)
+    # Matching stem + dir is accepted and round-trips.
+    side = sign_raw_output(raw_path=raw_path, config_path=None, experiment_name="x",
+                           sidecar_path=tmp_path / "real.provenance.json", private_key_path=key_path)
+    assert verify_sidecar(side).overall_ok
+
+
+def test_verify_raw_detects_config_substitution(tmp_path):
+    """Verifying against a DIFFERENT config than was signed flags config_hash (and the
+    composed content_hash) — the config binding is real, not tautological."""
+    raw_path = _make_dummy_raw(tmp_path)
+    signed_cfg = tmp_path / "signed.toml"; signed_cfg.write_bytes(b"instrument='orbitrap'\n")
+    other_cfg = tmp_path / "other.toml"; other_cfg.write_bytes(b"instrument='bruker'\n")
+    key_path = _write_temp_key(tmp_path)
+    side = sign_raw_output(raw_path=raw_path, config_path=signed_cfg, experiment_name="x",
+                           private_key_path=key_path)
+    r = verify_sidecar(side, config_path_override=other_cfg)
+    checks = {c.name: c for c in r.checks}
+    assert checks["config_hash"].status == "mismatch"
+    assert checks["content_hash"].status == "mismatch"
+    assert r.signature_ok and not r.overall_ok
+
+
+def test_verify_raw_rejects_retagged_type(tmp_path):
+    """Retagging the envelope type to mzML cannot pass verification — the raw payload
+    field set doesn't satisfy the mzML schema, so dispatch rejects it."""
+    import json
+    from mzprov.envelope import ATTESTATION_TYPE_MZML
+    from mzprov.errors import MalformedSidecar
+    raw_path = _make_dummy_raw(tmp_path)
+    key_path = _write_temp_key(tmp_path)
+    side = sign_raw_output(raw_path=raw_path, config_path=None, experiment_name="x",
+                           private_key_path=key_path)
+    blob = json.loads(Path(side).read_text())
+    blob["type"] = ATTESTATION_TYPE_MZML
+    Path(side).write_text(json.dumps(blob))
+    with pytest.raises(MalformedSidecar):
+        verify_sidecar(side)

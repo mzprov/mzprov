@@ -465,6 +465,27 @@ def sign_raw_output(
         sidecar_path = raw_path.with_name(raw_path.stem + ".provenance.json")
     else:
         sidecar_path = Path(sidecar_path)
+        # The .raw artifact is located at verify time by stripping ".provenance.json"
+        # from the sidecar name and looking for "{stem}.raw" in the SIDECAR's directory
+        # (verify._find_raw_for_sidecar) — the pairing is by stem + directory, NOT by a
+        # signed basename. A custom sidecar_path that doesn't pair back to raw_path would
+        # attest one file but verify a different (or absent) one, so require the pairing.
+        name = sidecar_path.name
+        if not name.endswith(".provenance.json"):
+            raise ValueError(
+                f"sidecar_path must end with '.provenance.json' (got {name!r}); the "
+                "verifier derives the .raw name from that suffix"
+            )
+        derived_stem = name[: -len(".provenance.json")]
+        if (
+            derived_stem != raw_path.stem
+            or sidecar_path.parent.resolve() != raw_path.parent.resolve()
+        ):
+            raise ValueError(
+                f"sidecar_path {sidecar_path} does not pair with raw_path {raw_path}: a "
+                f".raw sidecar must be named '{raw_path.stem}.provenance.json' beside the "
+                ".raw file (the verifier finds the artifact by the sidecar's stem + dir)"
+            )
     config_copy_target = sidecar_config_path(sidecar_path)
 
     # 1. Compute component hashes from disk.
