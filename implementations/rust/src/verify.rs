@@ -719,19 +719,53 @@ fn verify_mzml_payload(
 /// the `.raw` attestation is sidecar-only and the pairing is always by stem.
 /// The upper-case `.RAW` variant is tolerated for case-insensitive
 /// filesystems. Returns `None` if the exact file does not exist.
-fn find_raw_for_sidecar(sidecar_path: &Path) -> Option<PathBuf> {
-    let name = sidecar_path.file_name()?.to_str()?;
+fn find_raw_for_sidecar(sidecar_path: &Path) -> Result<PathBuf> {
+    let name = sidecar_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            ProvenanceError::MalformedSidecar(format!(
+                "sidecar path has a non-UTF-8 file name: {}",
+                sidecar_path.display()
+            ))
+        })?;
     let stem = name
         .strip_suffix(".provenance.json")
         .unwrap_or_else(|| sidecar_path.file_stem().and_then(|s| s.to_str()).unwrap_or(""));
-    let parent = sidecar_path.parent()?;
+    let parent = sidecar_path.parent().ok_or_else(|| {
+        ProvenanceError::MissingArtifact(format!(
+            "sidecar {} has no parent directory",
+            sidecar_path.display()
+        ))
+    })?;
+    // Accept {stem}.raw, tolerating {stem}.RAW for case-sensitive filesystems that
+    // store an upper-case extension. If BOTH exist as DISTINCT files, the pairing is
+    // ambiguous — refuse rather than silently pick one (dedup by canonical path so a
+    // case-insensitive filesystem, where the two names are one file, isn't ambiguous).
+    let mut found: Vec<PathBuf> = Vec::new();
     for suffix in [".raw", ".RAW"] {
         let candidate = parent.join(format!("{stem}{suffix}"));
         if candidate.is_file() {
-            return Some(candidate);
+            let key = candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
+            let dup = found
+                .iter()
+                .any(|p| p.canonicalize().unwrap_or_else(|_| p.clone()) == key);
+            if !dup {
+                found.push(candidate);
+            }
         }
     }
-    None
+    match found.len() {
+        0 => Err(ProvenanceError::MissingArtifact(format!(
+            "could not find the .raw file for sidecar {}",
+            sidecar_path.display()
+        ))),
+        1 => Ok(found.remove(0)),
+        _ => Err(ProvenanceError::MalformedSidecar(format!(
+            "ambiguous .raw pairing for sidecar {}: both {stem}.raw and {stem}.RAW exist",
+            sidecar_path.display()
+        ))),
+    }
 }
 
 fn verify_raw(
@@ -742,12 +776,7 @@ fn verify_raw(
     // Discover the .raw file independently of the payload, by the exact
     // {sidecar_stem}.raw pairing. If that file is missing this is a
     // structural error: the artifact the sidecar attests is gone.
-    let raw_path = find_raw_for_sidecar(sidecar_path).ok_or_else(|| {
-        ProvenanceError::MissingArtifact(format!(
-            "could not find the .raw file for sidecar {}",
-            sidecar_path.display()
-        ))
-    })?;
+    let raw_path = find_raw_for_sidecar(sidecar_path)?;
     verify_raw_payload(
         sidecar,
         &raw_path,

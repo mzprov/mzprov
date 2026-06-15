@@ -282,3 +282,19 @@ def test_verify_raw_rejects_retagged_type(tmp_path):
     Path(side).write_text(json.dumps(blob))
     with pytest.raises(MalformedSidecar):
         verify_sidecar(side)
+
+
+def test_verify_raw_rejects_ambiguous_raw_RAW_pairing(tmp_path):
+    """If both {stem}.raw and {stem}.RAW exist as distinct files (case-sensitive FS),
+    verification refuses rather than silently picking one."""
+    from mzprov.errors import MalformedSidecar
+    raw_path = _make_dummy_raw(tmp_path, name="amb")  # writes amb.raw
+    key_path = _write_temp_key(tmp_path)
+    side = sign_raw_output(raw_path=raw_path, config_path=None, experiment_name="x",
+                           private_key_path=key_path)
+    upper = tmp_path / "amb.RAW"
+    upper.write_bytes(b"different bytes")
+    if upper.resolve() == raw_path.resolve():
+        pytest.skip("case-insensitive filesystem: .raw and .RAW are the same file")
+    with pytest.raises(MalformedSidecar):
+        verify_sidecar(side)

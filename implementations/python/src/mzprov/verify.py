@@ -1321,14 +1321,23 @@ def _find_raw_for_sidecar(sidecar_path: Path) -> Path | None:
         stem = sidecar_path.stem
 
     parent = sidecar_path.parent
-    # Try the canonical .raw extension and the upper-case variant. The
-    # sign-side convention is exact (``{stem}.raw``); we accept ``.RAW``
-    # for tolerance on case-insensitive filesystems.
+    # Accept ``{stem}.raw``, tolerating ``{stem}.RAW`` on case-sensitive filesystems
+    # that store an upper-case extension. If BOTH exist as DISTINCT files the pairing is
+    # ambiguous — refuse rather than silently pick one (dedup by resolved path so a
+    # case-insensitive filesystem, where the two names are one file, is not ambiguous).
+    found: list[Path] = []
     for suffix in (".raw", ".RAW"):
         candidate = parent / (stem + suffix)
         if candidate.is_file():
-            return candidate
-    return None
+            key = candidate.resolve()
+            if not any(p.resolve() == key for p in found):
+                found.append(candidate)
+    if len(found) > 1:
+        raise MalformedSidecar(
+            f"ambiguous .raw pairing for sidecar {sidecar_path}: both {stem}.raw and "
+            f"{stem}.RAW exist"
+        )
+    return found[0] if found else None
 
 
 def _verify_raw_sidecar(

@@ -293,10 +293,18 @@ pub fn sign_raw(
         None => Vec::new(),
     };
 
+    // The sidecar name and the verify-time pairing derive from the raw stem, so a
+    // missing / non-UTF-8 stem must be a hard error — silently substituting a fallback
+    // would write a sidecar that verification could never pair back to this .raw.
     let raw_stem = raw_path
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("sidecar");
+        .ok_or_else(|| {
+            ProvenanceError::MissingArtifact(format!(
+                "raw path has a missing or non-UTF-8 file stem: {}",
+                raw_path.display()
+            ))
+        })?;
 
     let sidecar: PathBuf = match sidecar_path {
         None => raw_path
