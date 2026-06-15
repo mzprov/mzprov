@@ -32,12 +32,19 @@ from mzprov.canonicalize_mzml import (
     canonicalize_mzml,
     compose_mzml_content_hash,
 )
+from mzprov.canonicalize_raw import (
+    canonicalize_raw,
+    compose_raw_content_hash,
+)
 from mzprov.envelope import (
     ATTESTATION_TYPE,
     ATTESTATION_TYPE_MZML,
+    ATTESTATION_TYPE_RAW,
     MzmlPayload,
     MzmlSidecar,
     Payload,
+    RawPayload,
+    RawSidecar,
     Sidecar,
     parse_sidecar,
 )
@@ -539,6 +546,16 @@ def verify_sidecar(
     parsed = parse_sidecar(sidecar_path.read_bytes())
     if isinstance(parsed, MzmlSidecar):
         return _verify_mzml_sidecar(
+            sidecar_path,
+            parsed,
+            public_key_override=public_key_override,
+            config_path_override=config_path_override,
+            expected_key_id=expected_key_id,
+            require_trusted=require_trusted,
+            trusted_registry_path=trusted_registry_path,
+        )
+    if isinstance(parsed, RawSidecar):
+        return _verify_raw_sidecar(
             sidecar_path,
             parsed,
             public_key_override=public_key_override,
@@ -1279,4 +1296,257 @@ def verify_embedded_mzml(
         require_trusted=require_trusted,
         trusted_registry_path=trusted_registry_path,
         transport="embedded-mzml",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Thermo .raw verification path
+# ---------------------------------------------------------------------------
+
+
+def _find_raw_for_sidecar(sidecar_path: Path) -> Path | None:
+    """Find the ``.raw`` that this sidecar attests.
+
+    Unlike the mzML path, ``.raw`` discovery is **exact** and independent
+    of the payload: a sidecar at ``{name}.provenance.json`` attests the
+    file ``{name}.raw`` in the same directory. There is no
+    unique-sibling fallback — the ``.raw`` attestation is sidecar-only
+    and the pairing is always by stem. Returns ``None`` if the exact
+    file does not exist.
+    """
+    name = sidecar_path.name
+    if name.endswith(".provenance.json"):
+        stem = name[: -len(".provenance.json")]
+    else:
+        stem = sidecar_path.stem
+
+    parent = sidecar_path.parent
+    # Try the canonical .raw extension and the upper-case variant. The
+    # sign-side convention is exact (``{stem}.raw``); we accept ``.RAW``
+    # for tolerance on case-insensitive filesystems.
+    for suffix in (".raw", ".RAW"):
+        candidate = parent / (stem + suffix)
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _verify_raw_sidecar(
+    sidecar_path: Path,
+    sidecar: RawSidecar,
+    *,
+    public_key_override: PathLike | None,
+    config_path_override: PathLike | None,
+    expected_key_id: str | None,
+    require_trusted: bool,
+    trusted_registry_path: PathLike | None,
+) -> VerificationResult:
+    """Verify a ``.raw`` sidecar by recomputing the opaque hash and signature.
+
+    Same defense layering as the .d / mzML paths:
+      - Derive the actual signer key id from sidecar.verifying_key.
+      - Enforce payload.key_id consistency.
+      - --public-key is a byte-for-byte consistency check.
+      - Trust pinning (--expected-key-id, --require-trusted) layers on top.
+      - The .raw file is discovered independently of the payload, by the
+        exact ``{sidecar_stem}.raw`` pairing.
+
+    There is no embedded transport for ``.raw``, so this is the only
+    entry point into the raw verification path.
+    """
+    derived_signer_pubkey, derived_signer_key_id = _validate_signer_identity(
+        sidecar, public_key_override=public_key_override
+    )
+
+    # Discover the .raw file independently of the payload, by the exact
+    # {sidecar_stem}.raw pairing. If that file is missing this is a
+    # structural error: the artifact the sidecar attests is gone.
+    raw_path = _find_raw_for_sidecar(sidecar_path)
+    if raw_path is None:
+        name = sidecar_path.name
+        if name.endswith(".provenance.json"):
+            stem = name[: -len(".provenance.json")]
+        else:
+            stem = sidecar_path.stem
+        raise MissingArtifact(
+            f"could not find the .raw file for sidecar {sidecar_path.name} "
+            f"(looked for {sidecar_path.parent / (stem + '.raw')})"
+        )
+
+    # Conventional config copy for the JSON transport — shared
+    # convention from mzprov.paths. Anchored on the sidecar's name,
+    # never on a payload field.
+    conventional_config_path = sidecar_config_path(sidecar_path)
+
+    return _verify_raw_payload(
+        sidecar=sidecar,
+        sidecar_path=sidecar_path,
+        raw_path=raw_path,
+        conventional_config_path=conventional_config_path,
+        config_path_override=config_path_override,
+        derived_signer_pubkey=derived_signer_pubkey,
+        derived_signer_key_id=derived_signer_key_id,
+        expected_key_id=expected_key_id,
+        require_trusted=require_trusted,
+        trusted_registry_path=trusted_registry_path,
+        transport="sidecar-json",
+    )
+
+
+def _verify_raw_payload(
+    *,
+    sidecar: RawSidecar,
+    sidecar_path: Path,
+    raw_path: Path,
+    conventional_config_path: Path,
+    config_path_override: PathLike | None,
+    derived_signer_pubkey,
+    derived_signer_key_id: str,
+    expected_key_id: str | None,
+    require_trusted: bool,
+    trusted_registry_path: PathLike | None,
+    transport: str,
+) -> VerificationResult:
+    """Run integrity + trust checks for an already-parsed ``.raw`` sidecar.
+
+    Mirror of ``_verify_mzml_payload`` with the opaque whole-file hash in
+    place of the content hash. There is no embedded transport for
+    ``.raw``, so ``transport`` is always ``"sidecar-json"``; the
+    parameter is kept for symmetry with the other payload verifiers.
+    """
+    payload = sidecar.payload
+
+    # Recompute the opaque whole-file raw hash.
+    raw_hash = canonicalize_raw(raw_path)
+
+    # Resolve the config file: explicit override wins, otherwise look
+    # for the conventional copy next to the sidecar. Same convention as
+    # the .d / mzML paths: never fall back to the payload's signed value.
+    config_hash: bytes | None = None
+    config_check_status = STATUS_UNCHECKED
+    config_check_actual = ""
+    config_check_detail = ""
+
+    if config_path_override is not None:
+        config_resolved = Path(config_path_override)
+        if not config_resolved.is_file():
+            raise MissingArtifact(
+                f"--config override points at a missing file: {config_resolved}"
+            )
+        config_hash = canonicalize_bytes(config_resolved.read_bytes())
+        config_check_actual = _hex(config_hash)
+        config_check_status = (
+            STATUS_OK if payload.config_hash == config_check_actual else STATUS_MISMATCH
+        )
+    else:
+        if conventional_config_path.is_file():
+            config_hash = canonicalize_bytes(conventional_config_path.read_bytes())
+            config_check_actual = _hex(config_hash)
+            config_check_status = (
+                STATUS_OK if payload.config_hash == config_check_actual else STATUS_MISMATCH
+            )
+        elif payload.config_hash == _hex(canonicalize_bytes(b"")):
+            # The signer used config_path=None, so the signed config_hash
+            # is sha256(b""). We can recompute that without a file and
+            # compare; this is NOT tautological because b"" is a fixed
+            # constant, not a value pulled from the payload.
+            config_hash = canonicalize_bytes(b"")
+            config_check_actual = _hex(config_hash)
+            config_check_status = STATUS_OK
+        else:
+            config_check_detail = (
+                f"no config file found at {conventional_config_path} "
+                f"(pass --config to override)"
+            )
+
+    checks: list[FieldCheck] = []
+
+    expected_r = payload.raw_content_hash
+    actual_r = _hex(raw_hash)
+    checks.append(
+        FieldCheck(
+            name="raw_content_hash",
+            expected=expected_r,
+            actual=actual_r,
+            status=STATUS_OK if expected_r == actual_r else STATUS_MISMATCH,
+        )
+    )
+
+    checks.append(
+        FieldCheck(
+            name="config_hash",
+            expected=payload.config_hash,
+            actual=config_check_actual,
+            status=config_check_status,
+            detail=config_check_detail,
+        )
+    )
+
+    if config_hash is None:
+        checks.append(
+            FieldCheck(
+                name="content_hash",
+                expected=payload.content_hash,
+                actual="",
+                status=STATUS_UNCHECKED,
+                detail="cannot recompose content_hash without the config file",
+            )
+        )
+    else:
+        composed = compose_raw_content_hash(
+            raw_hash=raw_hash,
+            config_hash=config_hash,
+        )
+        checks.append(
+            FieldCheck(
+                name="content_hash",
+                expected=payload.content_hash,
+                actual=_hex(composed),
+                status=(
+                    STATUS_OK if payload.content_hash == _hex(composed) else STATUS_MISMATCH
+                ),
+            )
+        )
+
+    # Verify signature against the canonical payload bytes.
+    public_key = derived_signer_pubkey
+    try:
+        signature_bytes = signature_from_b64(sidecar.signature)
+    except (ValueError, MalformedSidecar) as e:
+        raise MalformedSidecar(
+            f"sidecar signature field is not decodable: {e}"
+        ) from e
+
+    signed_bytes = payload.to_canonical_json()
+
+    try:
+        public_key.verify(signature_bytes, signed_bytes)
+        signature_ok = True
+    except InvalidSignature:
+        signature_ok = False
+    except Exception:
+        signature_ok = False
+
+    trust = _evaluate_trust(
+        actual_key_id=derived_signer_key_id,
+        actual_pubkey=derived_signer_pubkey,
+        expected_key_id=expected_key_id,
+        require_trusted=require_trusted,
+        trusted_registry_path=trusted_registry_path,
+    )
+
+    overall_ok = (
+        signature_ok
+        and all(c.status == STATUS_OK for c in checks)
+        and trust.ok
+    )
+
+    return VerificationResult(
+        sidecar_path=sidecar_path,
+        payload=payload,
+        checks=checks,
+        signature_ok=signature_ok,
+        overall_ok=overall_ok,
+        trust=trust,
+        transport=transport,
     )

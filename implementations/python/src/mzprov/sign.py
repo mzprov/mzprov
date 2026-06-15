@@ -25,12 +25,19 @@ from mzprov.canonicalize_mzml import (
     canonicalize_mzml,
     compose_mzml_content_hash,
 )
+from mzprov.canonicalize_raw import (
+    canonicalize_raw,
+    compose_raw_content_hash,
+)
 from mzprov.envelope import (
     ATTESTATION_TYPE,
     ATTESTATION_TYPE_MZML,
+    ATTESTATION_TYPE_RAW,
     MzmlPayload,
     MzmlSidecar,
     Payload,
+    RawPayload,
+    RawSidecar,
     Sidecar,
 )
 from mzprov.errors import MissingArtifact, ProvenanceError
@@ -389,5 +396,123 @@ def sign_mzml_output(
         from mzprov.embed_mzml import write_embedded_provenance
         write_embedded_provenance(mzml_path, envelope_bytes)
         return mzml_path
+    write_sidecar_atomic(envelope_bytes, sidecar_path)
+    return sidecar_path
+
+
+# ---------------------------------------------------------------------------
+# Thermo .raw signing
+# ---------------------------------------------------------------------------
+
+
+def sign_raw_output(
+    *,
+    raw_path: PathLike,
+    config_path: PathLike | None,
+    experiment_name: str,
+    tool_name: str = "TimSim",
+    tool_version: str = "unknown",
+    sidecar_path: PathLike | None = None,
+    private_key_path: PathLike | None = None,
+) -> Path:
+    """Hash, sign, and write a provenance sidecar for a Thermo ``.raw`` file.
+
+    A Thermo ``.raw`` is an undocumented proprietary binary. It cannot be
+    structurally canonicalized and has no safe injection point for an
+    embedded envelope, so its attestation is an **opaque whole-file
+    hash** and is **sidecar-only** — there is deliberately no ``embed``
+    parameter (contrast ``sign_simulation_output`` / ``sign_mzml_output``).
+
+    Parameters
+    ----------
+    raw_path
+        The Thermo ``.raw`` file to sign.
+    config_path
+        Optional path to the producing tool's config file. If None, the
+        ``config_hash`` is computed over an empty byte string and the
+        sidecar carries it as such (still distinct from "no config field
+        present at all" — both forms are deterministic).
+    experiment_name
+        The experiment / dataset name (free-form string).
+    tool_name, tool_version
+        The producing tool's identity, recorded in the payload.
+    sidecar_path
+        Where to write the sidecar JSON. Defaults to a sibling of the
+        ``.raw`` file named ``{raw_stem}.provenance.json``.
+    private_key_path
+        Override path to an Ed25519 private key. If None, the default
+        location ``~/.config/timsim/keys/signing_key.pem`` is used (and a
+        key is generated there on first use).
+
+    Returns
+    -------
+    Path
+        The path to the written sidecar.
+    """
+    raw_path = Path(raw_path)
+    if not raw_path.is_file():
+        raise MissingArtifact(f"raw file does not exist: {raw_path}")
+
+    if config_path is not None:
+        config_path = Path(config_path)
+        if not config_path.is_file():
+            raise MissingArtifact(f"config file does not exist: {config_path}")
+        config_bytes = config_path.read_bytes()
+    else:
+        config_bytes = b""
+
+    if sidecar_path is None:
+        sidecar_path = raw_path.with_name(raw_path.stem + ".provenance.json")
+    else:
+        sidecar_path = Path(sidecar_path)
+    config_copy_target = sidecar_config_path(sidecar_path)
+
+    # 1. Compute component hashes from disk.
+    raw_hash = canonicalize_raw(raw_path)
+    config_hash = canonicalize_bytes(config_bytes)
+
+    # 1a. Copy the config bytes (if any) alongside the sidecar so the
+    # verifier has something to check the signed config_hash against.
+    # Same convention as the .d / mzML signing paths: the copy is
+    # anchored on the sidecar's stem, never on a payload field.
+    if config_path is not None:
+        config_copy_target.parent.mkdir(parents=True, exist_ok=True)
+        config_copy_target.write_bytes(config_bytes)
+
+    # 2. Compose the single content hash.
+    content_hash = compose_raw_content_hash(
+        raw_hash=raw_hash,
+        config_hash=config_hash,
+    )
+
+    # 3. Resolve a keypair (load or create on first use).
+    keypair = _resolve_keypair(private_key_path)
+
+    # 4. Build the payload.
+    payload = RawPayload(
+        tool_name=str(tool_name),
+        tool_version=str(tool_version),
+        experiment_name=str(experiment_name),
+        config_hash=_hex(config_hash),
+        raw_content_hash=_hex(raw_hash),
+        content_hash=_hex(content_hash),
+        timestamp_utc=_utc_now_iso(),
+        key_id=keypair.key_id,
+        canonicalization_version="v0",
+    )
+
+    # 5. Sign the deterministic JSON serialization of the payload.
+    signed_bytes = payload.to_canonical_json()
+    signature = keypair.private_key.sign(signed_bytes)
+
+    sidecar = RawSidecar(
+        payload=payload,
+        signature=signature_to_b64(signature),
+        verifying_key=public_key_to_b64(keypair.public_key),
+        type=ATTESTATION_TYPE_RAW,
+    )
+
+    # 6. Write the envelope to its sidecar transport (no embed for .raw).
+    envelope_bytes = sidecar.to_json_bytes()
     write_sidecar_atomic(envelope_bytes, sidecar_path)
     return sidecar_path

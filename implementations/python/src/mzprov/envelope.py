@@ -16,7 +16,10 @@ from mzprov.errors import MalformedSidecar, UnknownVersion
 
 ATTESTATION_TYPE = "timsim.provenance.v0"
 ATTESTATION_TYPE_MZML = "timsim.provenance.mzml.v0"
-SUPPORTED_TYPES = frozenset({ATTESTATION_TYPE, ATTESTATION_TYPE_MZML})
+ATTESTATION_TYPE_RAW = "timsim.provenance.raw.v0"
+SUPPORTED_TYPES = frozenset(
+    {ATTESTATION_TYPE, ATTESTATION_TYPE_MZML, ATTESTATION_TYPE_RAW}
+)
 SUPPORTED_CANONICALIZATION_VERSIONS = frozenset({"v0"})
 
 
@@ -133,6 +136,63 @@ class MzmlPayload:
         if data["canonicalization_version"] not in SUPPORTED_CANONICALIZATION_VERSIONS:
             raise UnknownVersion(
                 f"mzml sidecar canonicalization_version "
+                f"{data['canonicalization_version']!r} is not supported"
+            )
+        return cls(**{k: data[k] for k in required})
+
+
+@dataclass(frozen=True)
+class RawPayload:
+    """The signed inner payload of a Thermo ``.raw`` provenance sidecar.
+
+    Distinct from ``MzmlPayload`` because a ``.raw`` is an undocumented
+    proprietary binary: it is hashed as an opaque whole-file digest
+    (``raw_content_hash``) rather than a content-extracted form, and it
+    has no embed transport (sidecar only). Like the mzML payload the
+    producer is not necessarily TimSim — any tool that emits a vendor
+    ``.raw`` can sign it — so the producer fields are named generically
+    (``tool_*``) rather than ``simulator_*``.
+    """
+
+    tool_name: str
+    tool_version: str
+    experiment_name: str
+    config_hash: str
+    raw_content_hash: str
+    content_hash: str
+    timestamp_utc: str
+    key_id: str
+    canonicalization_version: str = "v0"
+
+    def to_canonical_json(self) -> bytes:
+        return json.dumps(
+            asdict(self),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RawPayload":
+        required = {
+            "tool_name",
+            "tool_version",
+            "experiment_name",
+            "config_hash",
+            "raw_content_hash",
+            "content_hash",
+            "timestamp_utc",
+            "key_id",
+            "canonicalization_version",
+        }
+        missing = required - data.keys()
+        if missing:
+            raise MalformedSidecar(
+                f"raw sidecar payload is missing required fields: {sorted(missing)}"
+            )
+        if data["canonicalization_version"] not in SUPPORTED_CANONICALIZATION_VERSIONS:
+            raise UnknownVersion(
+                f"raw sidecar canonicalization_version "
                 f"{data['canonicalization_version']!r} is not supported"
             )
         return cls(**{k: data[k] for k in required})
@@ -270,11 +330,77 @@ class MzmlSidecar:
         )
 
 
-def parse_sidecar(data: bytes) -> "Sidecar | MzmlSidecar":
+@dataclass(frozen=True)
+class RawSidecar:
+    """Sidecar envelope for Thermo ``.raw`` provenance attestations.
+
+    Same structural shape as ``Sidecar`` / ``MzmlSidecar`` (type /
+    payload / signature / verifying_key) but the payload is a
+    ``RawPayload`` (opaque whole-file hash) and the type tag is
+    ``timsim.provenance.raw.v0``. There is no embedded transport for
+    ``.raw`` — it is sidecar-only — so this envelope only ever lives in
+    a ``*.provenance.json`` file.
+    """
+
+    payload: RawPayload
+    signature: str
+    verifying_key: str
+    type: str = ATTESTATION_TYPE_RAW
+
+    def to_json_bytes(self) -> bytes:
+        blob = {
+            "type": self.type,
+            "payload": asdict(self.payload),
+            "signature": self.signature,
+            "verifying_key": self.verifying_key,
+        }
+        return json.dumps(blob, indent=2, sort_keys=True, ensure_ascii=False).encode(
+            "utf-8"
+        )
+
+    @classmethod
+    def from_json_bytes(cls, data: bytes) -> "RawSidecar":
+        try:
+            blob = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise MalformedSidecar(f"sidecar is not valid UTF-8 JSON: {e}") from e
+
+        if not isinstance(blob, dict):
+            raise MalformedSidecar("sidecar root must be a JSON object")
+
+        type_tag = blob.get("type")
+        if type_tag != ATTESTATION_TYPE_RAW:
+            raise UnknownVersion(
+                f"sidecar type {type_tag!r} is not the raw attestation type "
+                f"({ATTESTATION_TYPE_RAW!r}); use parse_sidecar() to dispatch"
+            )
+
+        payload_dict = blob.get("payload")
+        if not isinstance(payload_dict, dict):
+            raise MalformedSidecar("sidecar.payload must be an object")
+        payload = RawPayload.from_dict(payload_dict)
+
+        signature = blob.get("signature")
+        verifying_key = blob.get("verifying_key")
+        if not isinstance(signature, str) or not isinstance(verifying_key, str):
+            raise MalformedSidecar(
+                "sidecar.signature and sidecar.verifying_key must be strings"
+            )
+
+        return cls(
+            payload=payload,
+            signature=signature,
+            verifying_key=verifying_key,
+            type=type_tag,
+        )
+
+
+def parse_sidecar(data: bytes) -> "Sidecar | MzmlSidecar | RawSidecar":
     """Parse a sidecar JSON blob and return the right concrete type.
 
     Looks at the ``type`` field at the top of the envelope and dispatches
-    to either ``Sidecar.from_json_bytes`` or ``MzmlSidecar.from_json_bytes``.
+    to ``Sidecar.from_json_bytes``, ``MzmlSidecar.from_json_bytes``, or
+    ``RawSidecar.from_json_bytes``.
     Raises ``MalformedSidecar`` on JSON shape errors and ``UnknownVersion``
     if the type tag is not in ``SUPPORTED_TYPES``.
     """
@@ -291,6 +417,8 @@ def parse_sidecar(data: bytes) -> "Sidecar | MzmlSidecar":
         return Sidecar.from_json_bytes(data)
     if type_tag == ATTESTATION_TYPE_MZML:
         return MzmlSidecar.from_json_bytes(data)
+    if type_tag == ATTESTATION_TYPE_RAW:
+        return RawSidecar.from_json_bytes(data)
     raise UnknownVersion(
         f"sidecar type {type_tag!r} is not supported "
         f"(supported: {sorted(SUPPORTED_TYPES)})"
