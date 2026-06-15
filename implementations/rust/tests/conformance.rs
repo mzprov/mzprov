@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use mzprov::canonicalize_d::canonicalize_d;
 use mzprov::canonicalize_mzml::canonicalize_mzml;
+use mzprov::canonicalize_raw::canonicalize_raw;
 use mzprov::envelope::encode_hash_field;
 use mzprov::errors::ProvenanceError;
 use mzprov::exit_codes::{
@@ -17,7 +18,7 @@ use mzprov::exit_codes::{
 use mzprov::keys::{
     derive_key_id, generate_keypair, load_private_key, load_public_key, write_keypair,
 };
-use mzprov::sign::{sign_d, sign_mzml};
+use mzprov::sign::{sign_d, sign_mzml, sign_raw};
 use mzprov::trust::{TrustedKey, TrustedKeyRegistry};
 use mzprov::verify::{
     verify_sidecar, verify_sidecar_with, CheckStatus, TrustOptions, TrustStatus,
@@ -609,6 +610,55 @@ fn canonical_mzml_hashes_match_vectors() {
             "mzml vector {stem} mismatch"
         );
     }
+}
+
+/// Proves the Rust opaque whole-file `.raw` canonicalizer is byte-for-byte
+/// identical to the Python reference: the vector's `.canonical-hash.txt`
+/// was produced by `canonicalize_raw.py`.
+#[test]
+fn canonical_raw_hash_matches_vector() {
+    let root = vectors_root().join("canonicalization/raw");
+    let raw = root.join("001-minimal.raw");
+    let expected = std::fs::read_to_string(root.join("001-minimal.canonical-hash.txt"))
+        .expect("read expected")
+        .trim()
+        .to_owned();
+    let digest = canonicalize_raw(&raw).expect("canonicalize_raw");
+    assert_eq!(encode_hash_field(&digest), expected, "raw canonical hash mismatch");
+}
+
+#[test]
+fn round_trip_sign_then_verify_raw() {
+    let tmp = tempdir();
+    let keypair = generate_keypair().unwrap();
+    write_keypair(&keypair, &tmp.join("keys")).unwrap();
+
+    let src = vectors_root().join("canonicalization/raw/001-minimal.raw");
+    let dst = tmp.join("sample.raw");
+    std::fs::copy(&src, &dst).unwrap();
+
+    let signing_key = load_private_key(&tmp.join("keys/signing_key.pem")).unwrap();
+    let sidecar = sign_raw(
+        &dst,
+        None,
+        "round-trip",
+        "mzprov-rust-test",
+        "0.0.1",
+        None,
+        &signing_key,
+    )
+    .unwrap();
+    assert_eq!(
+        sidecar,
+        tmp.join("sample.provenance.json"),
+        "raw sidecar defaults to {{stem}}.provenance.json beside the .raw"
+    );
+
+    let r = verify_sidecar(&sidecar).expect("verify after sign");
+    assert!(r.overall_ok, "round-trip raw sidecar must verify");
+    assert!(r.signature_ok);
+    assert!(matches!(r.type_tag, mzprov::envelope::AttestationType::Raw));
+    assert_eq!(r.derived_key_id, keypair.key_id);
 }
 
 // ---------------------------------------------------------------------------

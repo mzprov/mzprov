@@ -13,6 +13,7 @@ use crate::canonicalize_d::{
     canonicalize_d, canonicalize_sqlite, compose_content_hash, sha256_bytes,
 };
 use crate::canonicalize_mzml::{canonicalize_mzml, compose_mzml_content_hash};
+use crate::canonicalize_raw::{canonicalize_raw, compose_raw_content_hash};
 use crate::paths::{
     embedded_d_config_path, embedded_mzml_config_path, sidecar_config_path,
 };
@@ -255,6 +256,9 @@ pub fn verify_sidecar_with(
         }
         AttestationType::Mzml => {
             verify_mzml(sidecar_path, &sidecar, &mut checks)?;
+        }
+        AttestationType::Raw => {
+            verify_raw(sidecar_path, &sidecar, &mut checks)?;
         }
     }
 
@@ -707,6 +711,111 @@ fn verify_mzml_payload(
     Ok(())
 }
 
+/// Find the `.raw` that this sidecar attests.
+///
+/// Unlike the mzML path, `.raw` discovery is **exact** and independent of
+/// the payload: a sidecar at `{name}.provenance.json` attests the file
+/// `{name}.raw` in the same directory. There is no unique-sibling fallback —
+/// the `.raw` attestation is sidecar-only and the pairing is always by stem.
+/// The upper-case `.RAW` variant is tolerated for case-insensitive
+/// filesystems. Returns `None` if the exact file does not exist.
+fn find_raw_for_sidecar(sidecar_path: &Path) -> Option<PathBuf> {
+    let name = sidecar_path.file_name()?.to_str()?;
+    let stem = name
+        .strip_suffix(".provenance.json")
+        .unwrap_or_else(|| sidecar_path.file_stem().and_then(|s| s.to_str()).unwrap_or(""));
+    let parent = sidecar_path.parent()?;
+    for suffix in [".raw", ".RAW"] {
+        let candidate = parent.join(format!("{stem}{suffix}"));
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn verify_raw(
+    sidecar_path: &Path,
+    sidecar: &Sidecar,
+    checks: &mut Vec<FieldCheck>,
+) -> Result<()> {
+    // Discover the .raw file independently of the payload, by the exact
+    // {sidecar_stem}.raw pairing. If that file is missing this is a
+    // structural error: the artifact the sidecar attests is gone.
+    let raw_path = find_raw_for_sidecar(sidecar_path).ok_or_else(|| {
+        ProvenanceError::MissingArtifact(format!(
+            "could not find the .raw file for sidecar {}",
+            sidecar_path.display()
+        ))
+    })?;
+    verify_raw_payload(
+        sidecar,
+        &raw_path,
+        config_path_for_sidecar(sidecar_path),
+        checks,
+    )
+}
+
+fn verify_raw_payload(
+    sidecar: &Sidecar,
+    raw_path: &Path,
+    config_path: Option<PathBuf>,
+    checks: &mut Vec<FieldCheck>,
+) -> Result<()> {
+    // Recompute the opaque whole-file raw hash.
+    let raw_hash = canonicalize_raw(raw_path)?;
+
+    let expected_r = sidecar.payload_str("raw_content_hash")?.to_owned();
+    let actual_r = encode_hash_field(&raw_hash);
+    let status = if expected_r == actual_r {
+        CheckStatus::Ok
+    } else {
+        CheckStatus::Mismatch
+    };
+    push_check(checks, "raw_content_hash", &expected_r, &actual_r, status, "");
+
+    let expected_cfg = sidecar.payload_str("config_hash")?.to_owned();
+    let (cfg_hash_opt, cfg_actual, cfg_status, cfg_detail) =
+        resolve_config_hash_at(config_path.as_deref(), &expected_cfg);
+    push_check(
+        checks,
+        "config_hash",
+        &expected_cfg,
+        &cfg_actual,
+        cfg_status,
+        &cfg_detail,
+    );
+
+    let expected_content = sidecar.payload_str("content_hash")?.to_owned();
+    match cfg_hash_opt {
+        Some(cfg) => {
+            let composed = compose_raw_content_hash(&raw_hash, &cfg);
+            let actual = encode_hash_field(&composed);
+            let status = if expected_content == actual {
+                CheckStatus::Ok
+            } else {
+                CheckStatus::Mismatch
+            };
+            push_check(checks, "content_hash", &expected_content, &actual, status, "");
+        }
+        None => {
+            push_check(
+                checks,
+                "content_hash",
+                &expected_content,
+                "",
+                CheckStatus::Unchecked,
+                "cannot recompose content_hash without the config file",
+            );
+        }
+    }
+
+    // Validate the expected config_hash is well-formed sha256 so a bad
+    // field surfaces as SIDECAR_ERROR even when the file is absent.
+    let _ = decode_hash_field(&expected_cfg)?;
+    Ok(())
+}
+
 fn resolve_config_hash_at(
     cfg_path: Option<&Path>,
     expected_cfg: &str,
@@ -903,6 +1012,25 @@ pub fn find_sidecar_for(path: &Path) -> Option<PathBuf> {
                         .unwrap_or(false)
             });
         }
+    }
+    // `.raw` pairing is exact: a sidecar is named `{stem}.provenance.json`
+    // beside the `{stem}.raw`. There is no unique-sibling fallback for raw
+    // (the attestation is sidecar-only and the pairing is always by stem).
+    if path.is_file()
+        && path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.eq_ignore_ascii_case("raw"))
+            .unwrap_or(false)
+    {
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            let parent = path.parent()?;
+            let candidate = parent.join(format!("{stem}.provenance.json"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        return None;
     }
     if path.is_dir() {
         if path.extension().and_then(|s| s.to_str()) == Some("d") {

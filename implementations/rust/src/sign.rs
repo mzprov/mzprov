@@ -14,12 +14,13 @@ use serde_json::{Map, Value};
 
 use crate::canonicalize_d::{canonicalize_d, canonicalize_sqlite, compose_content_hash, sha256_bytes};
 use crate::canonicalize_mzml::{canonicalize_mzml, compose_mzml_content_hash};
+use crate::canonicalize_raw::{canonicalize_raw, compose_raw_content_hash};
 use crate::paths::{
     embedded_d_config_path, embedded_mzml_config_path, sidecar_config_path,
 };
 use crate::envelope::{
     encode_hash_field, AttestationType, ATTESTATION_TYPE_D, ATTESTATION_TYPE_MZML,
-    SUPPORTED_CANONICALIZATION,
+    ATTESTATION_TYPE_RAW, SUPPORTED_CANONICALIZATION,
 };
 use crate::errors::{ProvenanceError, Result};
 use crate::keys::{derive_key_id, public_key_to_b64, sign_message, signature_to_b64};
@@ -246,6 +247,135 @@ pub fn sign_mzml(
     }
 }
 
+/// Sign a Thermo `.raw` file. `config_path` is optional; when absent, the
+/// signed `config_hash` is sha256 of the empty byte string.
+///
+/// A Thermo `.raw` is an undocumented proprietary binary. It cannot be
+/// structurally canonicalized and has no safe injection point for an
+/// embedded envelope, so its attestation is an **opaque whole-file hash**
+/// and is **sidecar-only** — there is deliberately no `embed` parameter
+/// (contrast [`sign_d`] / [`sign_mzml`]).
+///
+/// The sidecar defaults to `{stem}.provenance.json` beside the `.raw`. A
+/// custom `sidecar_path` MUST end with `.provenance.json` and pair back to
+/// the `.raw` (same stem, same directory): the verifier locates the
+/// artifact by stripping `.provenance.json` from the sidecar name and
+/// looking for `{stem}.raw` in the sidecar's directory, NEVER by a signed
+/// basename, so a sidecar that does not pair would attest one file but
+/// verify a different (or absent) one. This mirrors the guard in the Python
+/// `sign_raw_output`.
+#[allow(clippy::too_many_arguments)]
+pub fn sign_raw(
+    raw_path: &Path,
+    config_path: Option<&Path>,
+    experiment_name: &str,
+    tool_name: &str,
+    tool_version: &str,
+    sidecar_path: Option<&Path>,
+    signing_key: &SigningKey,
+) -> Result<PathBuf> {
+    if !raw_path.is_file() {
+        return Err(ProvenanceError::MissingArtifact(format!(
+            "raw file does not exist: {}",
+            raw_path.display()
+        )));
+    }
+    let config_bytes: Vec<u8> = match config_path {
+        Some(p) => {
+            if !p.is_file() {
+                return Err(ProvenanceError::MissingArtifact(format!(
+                    "config file does not exist: {}",
+                    p.display()
+                )));
+            }
+            fs::read(p)?
+        }
+        None => Vec::new(),
+    };
+
+    let raw_stem = raw_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("sidecar");
+
+    let sidecar: PathBuf = match sidecar_path {
+        None => raw_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{raw_stem}.provenance.json")),
+        Some(chosen) => {
+            // The .raw artifact is located at verify time by stripping
+            // ".provenance.json" from the sidecar name and looking for
+            // "{stem}.raw" in the SIDECAR's directory — the pairing is by
+            // stem + directory, NOT by a signed basename. Reject a custom
+            // sidecar path that wouldn't pair back to raw_path.
+            let name = chosen
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            let derived_stem = name.strip_suffix(".provenance.json").ok_or_else(|| {
+                ProvenanceError::MissingArtifact(format!(
+                    "sidecar_path must end with '.provenance.json' (got {name:?}); the \
+                     verifier derives the .raw name from that suffix"
+                ))
+            })?;
+            let same_dir = match (chosen.parent(), raw_path.parent()) {
+                (Some(a), Some(b)) => {
+                    a.canonicalize().ok() == b.canonicalize().ok()
+                        || a == b
+                }
+                _ => false,
+            };
+            if derived_stem != raw_stem || !same_dir {
+                return Err(ProvenanceError::MissingArtifact(format!(
+                    "sidecar_path {} does not pair with raw_path {}: a .raw sidecar must be \
+                     named '{raw_stem}.provenance.json' beside the .raw file (the verifier \
+                     finds the artifact by the sidecar's stem + dir)",
+                    chosen.display(),
+                    raw_path.display()
+                )));
+            }
+            chosen.to_path_buf()
+        }
+    };
+    let config_copy_target = sidecar_config_path(&sidecar);
+
+    let raw_hash = canonicalize_raw(raw_path)?;
+    let config_hash = sha256_bytes(&config_bytes);
+
+    if config_path.is_some() {
+        copy_config_to(&config_copy_target, &config_bytes)?;
+    }
+
+    let content_hash = compose_raw_content_hash(&raw_hash, &config_hash);
+
+    let verifying = signing_key.verifying_key();
+    let key_id = derive_key_id(&verifying);
+
+    let mut payload: Map<String, Value> = Map::new();
+    payload.insert("tool_name".into(), Value::String(tool_name.into()));
+    payload.insert("tool_version".into(), Value::String(tool_version.into()));
+    payload.insert("experiment_name".into(), Value::String(experiment_name.into()));
+    payload.insert("config_hash".into(), Value::String(encode_hash_field(&config_hash)));
+    payload.insert("raw_content_hash".into(), Value::String(encode_hash_field(&raw_hash)));
+    payload.insert("content_hash".into(), Value::String(encode_hash_field(&content_hash)));
+    payload.insert("timestamp_utc".into(), Value::String(utc_now_iso()));
+    payload.insert("key_id".into(), Value::String(key_id));
+    payload.insert(
+        "canonicalization_version".into(),
+        Value::String(SUPPORTED_CANONICALIZATION.into()),
+    );
+
+    let envelope_bytes = build_envelope_bytes(
+        AttestationType::Raw,
+        &payload,
+        signing_key,
+        &verifying,
+    );
+    write_atomic(&sidecar, &envelope_bytes)?;
+    Ok(sidecar)
+}
+
 fn copy_config_to(target: &Path, config_bytes: &[u8]) -> Result<()> {
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
@@ -269,6 +399,7 @@ fn build_envelope_bytes(
     let type_str = match type_tag {
         AttestationType::D => ATTESTATION_TYPE_D,
         AttestationType::Mzml => ATTESTATION_TYPE_MZML,
+        AttestationType::Raw => ATTESTATION_TYPE_RAW,
     };
 
     let mut envelope: Map<String, Value> = Map::new();

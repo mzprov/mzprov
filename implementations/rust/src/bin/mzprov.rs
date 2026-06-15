@@ -14,7 +14,7 @@ use mzprov::exit_codes::{
     EXIT_SIDECAR_ERROR, EXIT_SIGNATURE_MISMATCH, EXIT_UNSIGNED,
 };
 use mzprov::keys::{generate_keypair, load_private_key, write_keypair};
-use mzprov::sign::{sign_d, sign_mzml};
+use mzprov::sign::{sign_d, sign_mzml, sign_raw};
 use mzprov::trust::{
     trusted_key_from_pem_file, trusted_key_from_sidecar_file, TrustedKeyRegistry,
 };
@@ -215,6 +215,7 @@ fn run_verify(path: &std::path::Path, _strict: bool, trust_opts: TrustOptions) -
             let type_str = match result.type_tag {
                 AttestationType::D => "d",
                 AttestationType::Mzml => "mzml",
+                AttestationType::Raw => "raw",
             };
             println!(
                 "sidecar:    {}\ntype:       {}\nkey_id:     {}",
@@ -302,6 +303,19 @@ fn run_sign(
             .and_then(|s| s.to_str())
             .map(|s| s.eq_ignore_ascii_case("mzml"))
             .unwrap_or(false);
+    let is_raw = path.is_file()
+        && path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.eq_ignore_ascii_case("raw"))
+            .unwrap_or(false);
+
+    if is_raw && embed {
+        eprintln!(
+            "mzprov sign: --embed is not supported for .raw (sidecar-only attestation)"
+        );
+        return EXIT_GENERIC;
+    }
 
     let result = if is_d {
         let config_path = match config {
@@ -335,9 +349,19 @@ fn run_sign(
             &signing_key,
             embed,
         )
+    } else if is_raw {
+        sign_raw(
+            path,
+            config,
+            experiment_name,
+            tool_name,
+            tool_version,
+            sidecar_override,
+            &signing_key,
+        )
     } else {
         eprintln!(
-            "mzprov sign: {} is neither a .d directory nor an mzML file",
+            "mzprov sign: {} is neither a .d directory, an mzML file, nor a .raw file",
             path.display()
         );
         return EXIT_SIDECAR_ERROR;
