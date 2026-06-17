@@ -109,12 +109,23 @@ def _read_expected_exit_code(vector_dir: Path) -> int | None:
 
 
 def _run_verify(verify_cmd: list[str], target: Path) -> int:
-    """Invoke the verify command on ``target`` and return its exit code."""
-    proc = subprocess.run(
-        [*verify_cmd, str(target)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    """Invoke the verify command on ``target`` and return its exit code.
+
+    Raises ``RuntimeError`` (not ``OSError``) if the command cannot be
+    launched at all — e.g. ``--verify-cmd`` names a missing executable —
+    so callers can record a clean failed Result instead of crashing with a
+    traceback that swallows the per-vector report.
+    """
+    try:
+        proc = subprocess.run(
+            [*verify_cmd, str(target)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not run verify command {' '.join(verify_cmd)!r}: {exc}"
+        ) from exc
     return proc.returncode
 
 
@@ -122,7 +133,11 @@ def check_sidecar_valid(vectors: Path, verify_cmd: list[str]) -> list[Result]:
     results: list[Result] = []
     root = vectors / "sidecar" / "valid"
     for vector_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        code = _run_verify(verify_cmd, vector_dir)
+        try:
+            code = _run_verify(verify_cmd, vector_dir)
+        except RuntimeError as exc:
+            results.append(Result("sidecar/valid", vector_dir.name, False, str(exc)))
+            continue
         ok = code == 0
         results.append(
             Result(
@@ -150,7 +165,11 @@ def check_sidecar_invalid(vectors: Path, verify_cmd: list[str]) -> list[Result]:
                 )
             )
             continue
-        code = _run_verify(verify_cmd, vector_dir)
+        try:
+            code = _run_verify(verify_cmd, vector_dir)
+        except RuntimeError as exc:
+            results.append(Result("sidecar/invalid", vector_dir.name, False, str(exc)))
+            continue
         ok = code == want
         results.append(
             Result(
@@ -164,13 +183,22 @@ def check_sidecar_invalid(vectors: Path, verify_cmd: list[str]) -> list[Result]:
 
 
 def _run_canonicalize(canon_cmd: list[str], fmt: str, target: Path) -> str:
-    """Invoke the canonicalize command and return its ``sha256:<hex>`` line."""
-    proc = subprocess.run(
-        [*canon_cmd, fmt, str(target)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    """Invoke the canonicalize command and return its ``sha256:<hex>`` line.
+
+    Raises ``RuntimeError`` on both a nonzero exit and a launch failure
+    (missing executable) so the caller can record a failed Result.
+    """
+    try:
+        proc = subprocess.run(
+            [*canon_cmd, fmt, str(target)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not run canonicalize command {' '.join(canon_cmd)!r}: {exc}"
+        ) from exc
     if proc.returncode != 0:
         raise RuntimeError(
             f"canonicalize command exited {proc.returncode}: "
@@ -179,16 +207,66 @@ def _run_canonicalize(canon_cmd: list[str], fmt: str, target: Path) -> str:
     return proc.stdout.strip()
 
 
+def _canon_input_artifacts(fmt_dir: Path, fmt: str):
+    """Yield the input artifacts in ``fmt_dir`` for canonicalization format ``fmt``.
+
+    For ``d`` these are ``*.d`` *directories*; for ``mzml``/``raw`` they are
+    ``*.mzML``/``*.raw`` *files*. Non-artifacts (README.md, the hash files
+    themselves) are ignored.
+    """
+    suffix = CANON_INPUT_SUFFIX[fmt]
+    for child in fmt_dir.iterdir():
+        if not child.name.endswith(suffix):
+            continue
+        if fmt == "d":
+            if child.is_dir():
+                yield child
+        elif child.is_file():
+            yield child
+
+
 def check_canonicalization(vectors: Path, canon_cmd: list[str]) -> list[Result]:
+    """Check every canonicalization fixture, and guard against silent coverage loss.
+
+    A conformance run must not go green just because fixtures disappeared, so
+    this also fails if a required v0 format directory is missing or empty, and
+    cross-checks both directions: every ``*.canonical-hash.txt`` must have an
+    input artifact, and every input artifact must have an expected hash.
+    """
     results: list[Result] = []
     root = vectors / "canonicalization"
     for fmt in sorted(CANON_INPUT_SUFFIX):
+        suffix = CANON_INPUT_SUFFIX[fmt]
         fmt_dir = root / fmt
         if not fmt_dir.is_dir():
+            results.append(
+                Result(
+                    "canonicalization",
+                    fmt,
+                    False,
+                    f"required format directory canonicalization/{fmt}/ is missing",
+                )
+            )
             continue
-        for hash_file in sorted(fmt_dir.glob(f"*{HASH_SUFFIX}")):
+
+        hash_files = sorted(fmt_dir.glob(f"*{HASH_SUFFIX}"))
+        if not hash_files:
+            results.append(
+                Result(
+                    "canonicalization",
+                    fmt,
+                    False,
+                    f"canonicalization/{fmt}/ has no *{HASH_SUFFIX} fixtures",
+                )
+            )
+            continue
+
+        # Forward: every expected hash has an input that canonicalizes to it.
+        hashed_stems: set[str] = set()
+        for hash_file in hash_files:
             stem = hash_file.name[: -len(HASH_SUFFIX)]
-            target = fmt_dir / (stem + CANON_INPUT_SUFFIX[fmt])
+            hashed_stems.add(stem)
+            target = fmt_dir / (stem + suffix)
             name = f"{fmt}/{stem}"
             if not target.exists():
                 results.append(
@@ -217,6 +295,20 @@ def check_canonicalization(vectors: Path, canon_cmd: list[str]) -> list[Result]:
                     "hash matches" if ok else f"got {got} (want {want})",
                 )
             )
+
+        # Reverse: every input artifact must have a committed expected hash,
+        # so an untested fixture cannot slip in alongside the contract.
+        for artifact in sorted(_canon_input_artifacts(fmt_dir, fmt)):
+            stem = artifact.name[: -len(suffix)]
+            if stem not in hashed_stems:
+                results.append(
+                    Result(
+                        "canonicalization",
+                        f"{fmt}/{stem}",
+                        False,
+                        f"input artifact {artifact.name} has no {stem}{HASH_SUFFIX}",
+                    )
+                )
     return results
 
 
