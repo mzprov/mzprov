@@ -41,22 +41,29 @@ test-vectors/
 
 ## How to consume from any language
 
-A conforming implementation runs its own conformance harness against this
-directory. The harness MUST:
+A conforming implementation is driven by the single, language-agnostic
+conformance harness at [`_harness/run_conformance.py`](_harness/run_conformance.py).
+The harness:
 
-1. For each file under `sidecar/valid/`, parse the sidecar and verify it.
-   The verifier MUST return success.
-2. For each file under `sidecar/invalid/`, parse the sidecar and attempt
-   verification. The verifier MUST return failure with the rejection
-   reason declared in the file's `_metadata.expected_failure` field.
-3. For each input/expected-hash pair under `canonicalization/`, run the
-   canonicalizer on the input and check that the output hash matches the
-   expected value byte-for-byte.
+1. For each directory under `sidecar/valid/`, invokes the implementation's
+   verifier and asserts exit code 0.
+2. For each directory under `sidecar/invalid/`, invokes the verifier and
+   asserts the exit code matches the vector's `_metadata.expected_exit_code`.
+   (The verifier exit codes `0`–`7` are frozen at v0 and are the
+   machine-checkable contract; the `_metadata.expected_failure` string is a
+   human-readable diagnostic.)
+3. For each input/expected-hash pair under `canonicalization/`, invokes the
+   implementation's canonicalize driver and checks that the output hash
+   matches the committed value byte-for-byte.
 
-The Python reference implementation's conformance harness lives at
-`implementations/python/tests/conformance/`. The C# implementation's
-harness will live at `implementations/csharp/tests/conformance/`. They run
-against the same vectors.
+The harness is implementation-agnostic: it shells out to a `--verify-cmd`
+and a `--canonicalize-cmd`, so the SAME script validates the Python
+reference implementation, the C# implementation, and any future one. Each
+implementation supplies those two commands; nothing else is
+language-specific. See
+[`_harness/run_conformance.py`](_harness/run_conformance.py) for the exact
+contract and `.github/workflows/conformance.yml` for how each
+implementation wires it up in CI.
 
 ## Vector format
 

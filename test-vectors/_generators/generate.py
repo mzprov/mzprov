@@ -652,24 +652,25 @@ def generate_d_tampered_payload_d_content_hash() -> None:
     _attach_metadata(
         blob,
         expected_result="REJECT",
-        expected_exit_code=EXIT_HASH_MISMATCH,
-        expected_failure="HASH_MISMATCH",
-        spec_section="spec/sidecar-format.md",
+        expected_exit_code=EXIT_SIGNATURE_MISMATCH,
+        expected_failure="SIGNATURE_MISMATCH",
+        spec_section="spec/signature-scheme.md",
         description=(
             "A valid .d sidecar paired with its (untampered) source .d, "
             "but the sidecar's payload.d_content_hash has had its last "
-            "hex character flipped after signing. The recomputed hash "
-            "from disk does not match the field; verifier reports "
-            "HASH_MISMATCH on d_content_hash. (NOTE: this is one possible "
-            "diagnosis; the same mutation also breaks the signature, so "
-            "implementations MAY surface this as SIGNATURE_MISMATCH if "
-            "they verify the signature before recomputing hashes. The "
-            "v0 reference verifier checks hashes first.)"
+            "hex character flipped after signing. This is a payload-field "
+            "tamper (the same class as d-tampered-payload-experiment-name): "
+            "mutating any payload field invalidates the Ed25519 signature. "
+            "The v0 verifier exit-code precedence checks the signature "
+            "before per-field hashes (see _exit_for_failure in cli.py), so "
+            "the verifier MUST report SIGNATURE_MISMATCH. The recomputed "
+            "d_content_hash also diverges, but signature mismatch is the "
+            "authoritative diagnosis for a payload-field tamper."
         ),
     )
     _write_sidecar(blob, sidecar_path)
-    _expect_verify_returns_failure(sidecar_path, failing_field="d_content_hash")
-    print(f"  [invalid:HASH_MISMATCH] {out_dir.relative_to(VECTORS_ROOT)}/")
+    _expect_verify_returns_failure(sidecar_path, failing_field="signature")
+    print(f"  [invalid:SIGNATURE_MISMATCH] {out_dir.relative_to(VECTORS_ROOT)}/")
 
 
 def generate_d_wrong_key_id_label() -> None:

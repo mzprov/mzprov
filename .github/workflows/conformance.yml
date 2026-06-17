@@ -1,0 +1,133 @@
+# Cross-implementation conformance CI for mzprov.
+#
+# This workflow enforces the test-vectors/ interop contract on every push
+# and PR to main. It has one job per implementation; each job runs the SAME
+# black-box conformance harness (test-vectors/_harness/run_conformance.py)
+# against that implementation's binary. The `conformance` gate job at the
+# bottom depends on all of them, so branch protection only needs to require
+# the single `conformance` check for "every implementation agrees on every
+# vector" to be a merge gate.
+#
+# ---------------------------------------------------------------------------
+# HOW TO ADD A NEW IMPLEMENTATION (e.g. a future third-language slot)
+# ---------------------------------------------------------------------------
+# 1. Copy the `python` or `csharp` job to a new job; the `csharp` job below
+#    is a worked example of a non-Python implementation.
+# 2. Replace the toolchain setup + build steps with that language's.
+# 3. Keep the final step calling run_conformance.py UNCHANGED in spirit —
+#    only swap in your implementation's commands:
+#
+#        python test-vectors/_harness/run_conformance.py \
+#          --verify-cmd "<how to invoke your verifier> verify" \
+#          --canonicalize-cmd "<how to invoke your canonicalize driver>"
+#
+#    The harness appends the target path to --verify-cmd, and the
+#    "<format> <input-path>" args to --canonicalize-cmd. The verifier exit
+#    code (0-7, frozen at v0) and a "sha256:<hex>" stdout line from the
+#    canonicalize driver are the entire contract; nothing else is
+#    implementation-specific.
+# 4. Add the new job's name to the `needs:` list of the `conformance` job so
+#    it becomes part of the merge gate.
+
+name: conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the Python implementation (editable, with test extras)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "implementations/python[test]"
+
+      # Internal correctness: the existing pytest suite (API + canonicalization
+      # invariances). Covers what the black-box harness cannot see.
+      - name: Unit tests
+        working-directory: implementations/python
+        run: pytest
+
+      # Cross-implementation contract: the black-box conformance harness over
+      # test-vectors/. `mzprov` is on PATH from the editable install; the
+      # canonicalize driver default points at the bundled Python driver.
+      - name: Conformance harness
+        run: python test-vectors/_harness/run_conformance.py
+
+  # C# implementation. Independent of the Python reference (shares no code);
+  # runs the SAME conformance harness against the built `mzprov` binary. The
+  # one binary serves both harness commands via subcommands: `verify <path>`
+  # and `canonicalize <format> <path>`.
+  csharp:
+    name: csharp
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      # The harness is a Python script; the C# job needs Python to run it
+      # (it drives the C# binary via --verify-cmd / --canonicalize-cmd).
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build (Release)
+        run: dotnet build implementations/csharp/Mzprov/Mzprov.csproj --configuration Release
+
+      - name: Conformance harness (C# binary, same vectors)
+        run: |
+          DLL="$PWD/implementations/csharp/Mzprov/bin/Release/net8.0/mzprov.dll"
+          python test-vectors/_harness/run_conformance.py \
+            --verify-cmd "dotnet $DLL verify" \
+            --canonicalize-cmd "dotnet $DLL canonicalize"
+
+  # Single required status check. Branch protection on main should require
+  # `conformance`; it goes green only if every implementation job above
+  # succeeded, which is the cross-implementation agreement guarantee.
+  conformance:
+    name: conformance
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - python
+      - csharp
+    steps:
+      # Require EVERY implementation job to have succeeded. `if: always()`
+      # means this gate runs even when a needed job failed/was skipped, so we
+      # must reject anything that is not `success` (failure, cancelled, and
+      # skipped all count as "did not pass").
+      - name: Assert all implementation jobs passed
+        run: |
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "implementation job results: $results"
+          for r in $results; do
+            if [ "$r" != "success" ]; then
+              echo "A conformance job did not succeed (result: $r)."
+              exit 1
+            fi
+          done
+          echo "All conformance jobs passed."

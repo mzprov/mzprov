@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>mzprov</AssemblyName>
+    <RootNamespace>Mzprov</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Ed25519 verification + BLAKE2b-80 key-id digest. The .NET BCL's
+         Ed25519 support is not consistently available, so we use the
+         well-audited BouncyCastle portable build. -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+    <!-- SQLite reader for the .d (analysis.tdf) canonicalization. Bundles
+         a native e_sqlite3 so row ordering matches the reference exactly. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+  </ItemGroup>
+
+</Project>

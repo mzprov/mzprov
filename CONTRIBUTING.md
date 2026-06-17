@@ -67,6 +67,33 @@ a v0 bug fix**. It is a v1 change, even if the v0 implementation is
 "wrong" in some interpretive sense. v0 hashes are an immutable commitment
 to existing sidecars in the wild.
 
+## Conformance must pass before merge
+
+Every push and PR to `main` runs `.github/workflows/conformance.yml`. A PR
+is **not mergeable** until the `conformance` status check is green. That
+check enforces, for every implementation, that:
+
+1. the implementation's own unit suite passes (internal correctness), and
+2. the black-box conformance harness
+   ([`test-vectors/_harness/run_conformance.py`](test-vectors/_harness/run_conformance.py))
+   passes — i.e. the implementation verifies every `sidecar/valid/` vector
+   (exit 0), rejects every `sidecar/invalid/` vector with the exit code
+   declared in that vector's `_metadata.expected_exit_code`, and reproduces
+   every committed `canonicalization/` hash byte-for-byte.
+
+The harness keys on the verifier exit codes (`0`–`7`), which are frozen at
+v0; they are the machine-checkable cross-implementation contract. When a
+second implementation lands it gets its own job in the same workflow running
+the same harness against its binary, and is added to the `conformance` gate
+(the workflow header documents the exact steps). Both jobs must pass for a
+PR to merge — that is what turns "the spec is implementable in more than one
+language" from an aspiration into an enforced gate.
+
+Because the vectors are the contract, a PR that changes a vector's bytes or
+its `_metadata` (including `expected_exit_code`) is a behavior change and
+must call that out explicitly in its description, per "How to fix a bug in
+v0" above.
+
 ## Governance
 
 `main` is currently merged solo by the project lead. This will change as
