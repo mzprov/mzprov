@@ -235,7 +235,18 @@ internal static class Keys
         Directory.CreateDirectory(keyDir);
         byte[] privDer = Concat(Ed25519Pkcs8Prefix, pair.Private.GetEncoded()); // 16 + 32
         byte[] pubDer = Concat(Ed25519SpkiPrefix, pair.PublicRaw);              // 12 + 32
-        File.WriteAllText(Path.Combine(keyDir, PrivateKeyFilename), EncodePem(privDer, "PRIVATE KEY"));
+        string skPath = Path.Combine(keyDir, PrivateKeyFilename);
+        File.WriteAllText(skPath, EncodePem(privDer, "PRIVATE KEY"));
+        // Restrict the private key to owner read/write, matching the reference's
+        // chmod 0600. Tolerate platforms where this is not meaningful.
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(skPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        }
+        catch (Exception) { /* best-effort, as the reference does */ }
         File.WriteAllText(Path.Combine(keyDir, PublicKeyFilename), EncodePem(pubDer, "PUBLIC KEY"));
         File.WriteAllText(Path.Combine(keyDir, KeyIdFilename), pair.KeyId + "\n");
     }

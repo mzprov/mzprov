@@ -40,6 +40,14 @@ A complete signer + verifier:
 **Not implemented:** the trusted-keys registry / trust-pinning flags
 (`--expected-key-id`, `--require-trusted`) — out of scope for v0 interop.
 
+### Known differences from the Python reference
+
+- For a `.d`, the reference's `sign_simulation_output` hardcodes the payload
+  `simulator_name` to `"TimSim"` (its only `.d` producer). A general signer
+  must not misattribute provenance, so the C# `sign` records the actual
+  `--tool-name` instead. The field is free-form and never read by a verifier,
+  so this does not affect interop — round-trip passes in both directions.
+
 ## Layout
 
 ```

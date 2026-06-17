@@ -45,6 +45,12 @@ internal static class Sign
 
         byte[] contentHash = Canonicalize.ComposeContentHash(dHash, groundTruthHash, configHash);
 
+        // Deliberate divergence from the reference: sign_simulation_output
+        // hardcodes simulator_name="TimSim" (TimSim is its only .d producer).
+        // A general signer must not falsely attribute provenance, so we record
+        // the actual --tool-name. The field is free-form and not read by any
+        // verifier, so this does not affect interop (round-trip passes both
+        // ways); see implementations/csharp/README.md "Known differences".
         var payload = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["simulator_name"] = toolName,
@@ -125,9 +131,35 @@ internal static class Sign
         if (!File.Exists(rawPath)) throw new MissingArtifactException($"raw file does not exist: {rawPath}");
         byte[] configBytes = ReadOptionalConfig(configPath);
 
-        string sidecarPath = sidecarPathOverride
-            ?? Path.Combine(Paths.DirName(rawPath),
-                Path.GetFileNameWithoutExtension(Paths.BaseName(rawPath)) + ".provenance.json");
+        string rawStem = Path.GetFileNameWithoutExtension(Paths.BaseName(rawPath));
+        string sidecarPath;
+        if (sidecarPathOverride is null)
+        {
+            sidecarPath = Path.Combine(Paths.DirName(rawPath), rawStem + ".provenance.json");
+        }
+        else
+        {
+            // The verifier locates the .raw by stripping ".provenance.json" from
+            // the sidecar name and looking for "{stem}.raw" in the sidecar's dir
+            // (Verify._find_raw_for_sidecar). A custom sidecar path that does not
+            // pair back would attest one file but verify a different (or absent)
+            // one, so require the pairing — matching the reference signer.
+            sidecarPath = sidecarPathOverride;
+            string name = Paths.BaseName(sidecarPath);
+            if (!name.EndsWith(".provenance.json", StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"--sidecar must end with '.provenance.json' (got '{name}'); the verifier derives the .raw name from that suffix");
+            }
+            string derivedStem = name.Substring(0, name.Length - ".provenance.json".Length);
+            if (derivedStem != rawStem ||
+                Path.GetFullPath(Paths.DirName(sidecarPath)) != Path.GetFullPath(Paths.DirName(rawPath)))
+            {
+                throw new ArgumentException(
+                    $"--sidecar {sidecarPath} does not pair with {rawPath}: a .raw sidecar must be named " +
+                    $"'{rawStem}.provenance.json' beside the .raw file");
+            }
+        }
         string configCopyPath = Paths.SidecarConfigPath(sidecarPath);
 
         byte[] rawHash = Canonicalize.CanonicalizeRaw(rawPath);

@@ -109,11 +109,15 @@ internal static class SignCli
         return "";
     }
 
-    private static string DefaultKeyDir()
+    // Matches the reference default (~/.config/timsim/keys) so that signing
+    // without --key uses the SAME local identity across both implementations.
+    private static string DefaultKeyDir() => DefaultKeyDirShared();
+
+    internal static string DefaultKeyDirShared()
     {
         string baseDir = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
-        return Path.Combine(baseDir, "mzprov", "keys");
+        return Path.Combine(baseDir, "timsim", "keys");
     }
 
     private static string Next(string[] args, ref int i, string opt)

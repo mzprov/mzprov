@@ -45,10 +45,5 @@ internal static class KeysCli
         }
     }
 
-    private static string DefaultKeyDir()
-    {
-        string baseDir = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME")
-            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
-        return Path.Combine(baseDir, "mzprov", "keys");
-    }
+    private static string DefaultKeyDir() => SignCli.DefaultKeyDirShared();
 }
