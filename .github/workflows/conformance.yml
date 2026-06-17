@@ -9,10 +9,10 @@
 # vector" to be a merge gate.
 #
 # ---------------------------------------------------------------------------
-# HOW TO ADD A NEW IMPLEMENTATION (e.g. the C# slot, or a future third one)
+# HOW TO ADD A NEW IMPLEMENTATION (e.g. a future third-language slot)
 # ---------------------------------------------------------------------------
-# 1. Copy the `python` job to a new job (e.g. `csharp`); see the commented
-#    template below for the C# shape.
+# 1. Copy the `python` or `csharp` job to a new job; the `csharp` job below
+#    is a worked example of a non-Python implementation.
 # 2. Replace the toolchain setup + build steps with that language's.
 # 3. Keep the final step calling run_conformance.py UNCHANGED in spirit —
 #    only swap in your implementation's commands:
@@ -73,28 +73,37 @@ jobs:
       - name: Conformance harness
         run: python test-vectors/_harness/run_conformance.py
 
-  # ---------------------------------------------------------------------------
-  # C# implementation slot (tracked separately; uncomment when it lands).
-  # The verify-cmd / canonicalize-cmd are placeholders — set them to the real
-  # built artifacts. Remember to add `csharp` to the `conformance` job's
-  # `needs:` list below so it becomes a merge gate.
-  # ---------------------------------------------------------------------------
-  # csharp:
-  #   name: csharp
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Set up .NET
-  #       uses: actions/setup-dotnet@v4
-  #       with:
-  #         dotnet-version: "8.0.x"
-  #     - name: Build
-  #       run: dotnet build implementations/csharp --configuration Release
-  #     - name: Conformance harness (C# binary, same vectors)
-  #       run: |
-  #         python test-vectors/_harness/run_conformance.py \
-  #           --verify-cmd "dotnet implementations/csharp/src/Mzprov.Cli/bin/Release/net8.0/mzprov.dll verify" \
-  #           --canonicalize-cmd "dotnet implementations/csharp/src/Mzprov.Conformance/bin/Release/net8.0/canonicalize.dll"
+  # C# implementation. Independent of the Python reference (shares no code);
+  # runs the SAME conformance harness against the built `mzprov` binary. The
+  # one binary serves both harness commands via subcommands: `verify <path>`
+  # and `canonicalize <format> <path>`.
+  csharp:
+    name: csharp
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      # The harness is a Python script; the C# job needs Python to run it
+      # (it drives the C# binary via --verify-cmd / --canonicalize-cmd).
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build (Release)
+        run: dotnet build implementations/csharp/Mzprov/Mzprov.csproj --configuration Release
+
+      - name: Conformance harness (C# binary, same vectors)
+        run: |
+          DLL="$PWD/implementations/csharp/Mzprov/bin/Release/net8.0/mzprov.dll"
+          python test-vectors/_harness/run_conformance.py \
+            --verify-cmd "dotnet $DLL verify" \
+            --canonicalize-cmd "dotnet $DLL canonicalize"
 
   # Single required status check. Branch protection on main should require
   # `conformance`; it goes green only if every implementation job above
@@ -105,7 +114,7 @@ jobs:
     if: always()
     needs:
       - python
-      # - csharp   # add when the C# job lands
+      - csharp
     steps:
       # Require EVERY implementation job to have succeeded. `if: always()`
       # means this gate runs even when a needed job failed/was skipped, so we
