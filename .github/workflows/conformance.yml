@@ -105,9 +105,56 @@ jobs:
             --verify-cmd "dotnet $DLL verify" \
             --canonicalize-cmd "dotnet $DLL canonicalize"
 
+  # Cross-implementation round-trip (differential test): an attestation
+  # PRODUCED by one implementation must be ACCEPTED by another. Needs both
+  # toolchains plus the Python package installed, so it lives in its own job.
+  roundtrip:
+    name: roundtrip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the Python implementation
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e implementations/python
+
+      - name: Build C# (Release)
+        run: dotnet build implementations/csharp/Mzprov/Mzprov.csproj --configuration Release
+
+      - name: Round-trip both directions
+        run: |
+          DLL="$PWD/implementations/csharp/Mzprov/bin/Release/net8.0/mzprov.dll"
+          CSKEYS="$RUNNER_TEMP/cs-keys"
+          PYKEYS="$RUNNER_TEMP/py-keys"
+          dotnet "$DLL" keys generate --key-dir "$CSKEYS"
+          python -c "from mzprov.keys import load_or_create_keypair; load_or_create_keypair('$PYKEYS')"
+
+          # C# signs every format -> Python verifies.
+          python test-vectors/_harness/run_roundtrip.py \
+            --signer-cmd "dotnet $DLL sign" \
+            --verifier-cmd "mzprov verify" \
+            --key "$CSKEYS" --label "C#->Py"
+
+          # Python signs (its CLI has no .raw) -> C# verifies.
+          python test-vectors/_harness/run_roundtrip.py \
+            --signer-cmd "mzprov sign" \
+            --verifier-cmd "dotnet $DLL verify" \
+            --key "$PYKEYS" --cases "d,d-embed,mzml,mzml-embed" --label "Py->C#"
+
   # Single required status check. Branch protection on main should require
-  # `conformance`; it goes green only if every implementation job above
-  # succeeded, which is the cross-implementation agreement guarantee.
+  # `conformance`; it goes green only if every implementation + interop job
+  # above succeeded, which is the cross-implementation agreement guarantee.
   conformance:
     name: conformance
     runs-on: ubuntu-latest
@@ -115,6 +162,7 @@ jobs:
     needs:
       - python
       - csharp
+      - roundtrip
     steps:
       # Require EVERY implementation job to have succeeded. `if: always()`
       # means this gate runs even when a needed job failed/was skipped, so we

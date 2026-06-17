@@ -15,7 +15,9 @@ internal static class Program
     private const string Usage =
         "usage: mzprov <subcommand> [args...]\n\n" +
         "subcommands:\n" +
+        "  sign <path> ...               sign a .d dir, .mzML, or .raw with an Ed25519 attestation\n" +
         "  verify <path>                 verify a sidecar (.d dir, .mzML, .raw, or sidecar JSON)\n" +
+        "  keys generate ...             generate an Ed25519 signing keypair\n" +
         "  canonicalize {mzml|d|raw} <p> print the canonical hash of an artifact as sha256:<hex>\n";
 
     private static int Main(string[] args)
@@ -37,8 +39,12 @@ internal static class Program
             case "help":
                 Console.Out.Write(Usage);
                 return 0;
+            case "sign":
+                return SignCli.Run(rest);
             case "verify":
                 return VerifyCli.Run(rest);
+            case "keys":
+                return KeysCli.Run(rest);
             case "canonicalize":
                 return CanonicalizeCli.Run(rest);
             default:
