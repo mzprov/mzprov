@@ -87,25 +87,46 @@ def _read_expected_exit_code(vector_dir: Path) -> int | None:
 
     Two transports carry the metadata differently:
 
-      * embedded vectors (no sibling ``*.provenance.json``) ship a standalone
-        ``_metadata.json``;
       * sidecar vectors carry an ``_metadata`` object inside their
-        ``*.provenance.json``.
+        ``*.provenance.json`` — this is authoritative, since it lives in the
+        signed artifact's actual sidecar;
+      * embedded vectors have no sibling ``*.provenance.json`` and instead
+        ship a standalone ``_metadata.json``.
+
+    The provenance sidecar therefore wins when present, and the standalone
+    file is only a fallback for the embedded transport. A vector that
+    declares an exit code in *both* places is ambiguous — rather than guess
+    which one is authoritative, raise ``ValueError`` so the caller records a
+    clear failure (the project's refuse-ambiguity rule applies to vector
+    authoring too).
 
     Returns ``None`` if no metadata declares an exit code (a vector authoring
     error the harness surfaces as a failure rather than guessing).
     """
-    standalone = vector_dir / "_metadata.json"
-    if standalone.is_file():
-        meta = json.loads(standalone.read_text())
-        return meta.get("expected_exit_code")
-
+    provenance_code = None
     for prov in sorted(vector_dir.glob("*.provenance.json")):
         obj = json.loads(prov.read_text())
         meta = obj.get("_metadata")
         if isinstance(meta, dict) and "expected_exit_code" in meta:
-            return meta["expected_exit_code"]
-    return None
+            provenance_code = meta["expected_exit_code"]
+            break
+
+    standalone_code = None
+    standalone = vector_dir / "_metadata.json"
+    if standalone.is_file():
+        meta = json.loads(standalone.read_text())
+        if "expected_exit_code" in meta:
+            standalone_code = meta["expected_exit_code"]
+
+    if provenance_code is not None and standalone_code is not None:
+        raise ValueError(
+            "vector declares expected_exit_code in both a *.provenance.json "
+            "_metadata block and a standalone _metadata.json; refusing to "
+            "guess which is authoritative"
+        )
+    if provenance_code is not None:
+        return provenance_code
+    return standalone_code
 
 
 def _run_verify(verify_cmd: list[str], target: Path) -> int:
@@ -154,7 +175,11 @@ def check_sidecar_invalid(vectors: Path, verify_cmd: list[str]) -> list[Result]:
     results: list[Result] = []
     root = vectors / "sidecar" / "invalid"
     for vector_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        want = _read_expected_exit_code(vector_dir)
+        try:
+            want = _read_expected_exit_code(vector_dir)
+        except ValueError as exc:
+            results.append(Result("sidecar/invalid", vector_dir.name, False, str(exc)))
+            continue
         if want is None:
             results.append(
                 Result(

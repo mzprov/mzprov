@@ -107,10 +107,18 @@ jobs:
       - python
       # - csharp   # add when the C# job lands
     steps:
+      # Require EVERY implementation job to have succeeded. `if: always()`
+      # means this gate runs even when a needed job failed/was skipped, so we
+      # must reject anything that is not `success` (failure, cancelled, and
+      # skipped all count as "did not pass").
       - name: Assert all implementation jobs passed
         run: |
-          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
-            echo "One or more conformance jobs failed."
-            exit 1
-          fi
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "implementation job results: $results"
+          for r in $results; do
+            if [ "$r" != "success" ]; then
+              echo "A conformance job did not succeed (result: $r)."
+              exit 1
+            fi
+          done
           echo "All conformance jobs passed."
