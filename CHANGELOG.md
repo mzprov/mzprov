@@ -22,6 +22,14 @@ applies to the Python reference implementation. The specification version
   three transports) and `canonicalize` (`.d`/mzML/`.raw`), passing every v0
   vector under the shared conformance harness. Shares no code with the
   Python reference; both target the same spec and vectors.
+- C# signing: `mzprov sign` (`.d`/mzML/`.raw`, JSON sidecar or `--embed`) and
+  `mzprov keys generate`. Ed25519 keys are byte-format-compatible with the
+  Python reference's key files (interoperable both directions).
+- Cross-implementation round-trip harness
+  (`test-vectors/_harness/run_roundtrip.py`) and a `roundtrip` CI job: a
+  differential test proving an attestation produced by one implementation is
+  accepted by another (both directions, all transports). Added to the
+  `conformance` merge gate.
 - Initial repository skeleton.
 - Three-license split: CC-BY-4.0 for `docs/` and `spec/`, Apache-2.0 for
   `implementations/python/`, CC0 1.0 for `test-vectors/`.

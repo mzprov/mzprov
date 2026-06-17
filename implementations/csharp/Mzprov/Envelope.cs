@@ -67,9 +67,14 @@ internal sealed class Sidecar
     };
 
     // Canonical JSON of the payload — the bytes that were signed.
-    public byte[] CanonicalPayloadJson()
+    public byte[] CanonicalPayloadJson() => CanonicalJson(_payload);
+
+    // Canonical JSON of a string->string field map, matching the reference
+    // json.dumps(sort_keys=True, separators=(",",":"), ensure_ascii=False).
+    // This is the byte sequence that is signed/verified.
+    public static byte[] CanonicalJson(IReadOnlyDictionary<string, string> fields)
     {
-        var keys = new List<string>(_payload.Keys);
+        var keys = new List<string>(fields.Keys);
         keys.Sort(StringComparer.Ordinal);
         var sb = new StringBuilder();
         sb.Append('{');
@@ -78,9 +83,42 @@ internal sealed class Sidecar
             if (i > 0) sb.Append(',');
             AppendJsonString(sb, keys[i]);
             sb.Append(':');
-            AppendJsonString(sb, _payload[keys[i]]);
+            AppendJsonString(sb, fields[keys[i]]);
         }
         sb.Append('}');
+        return Encoding.UTF8.GetBytes(sb.ToString());
+    }
+
+    // Serialize a full sidecar envelope to indented JSON bytes for on-disk /
+    // embedded storage. Formatting is NOT part of the signed bytes (verifiers
+    // re-parse and re-canonicalize the payload), so this only needs to be
+    // valid, sorted JSON; we match the reference's indent=2 sort_keys style
+    // for human-readable parity.
+    public static byte[] WriteSidecarJson(string type, IReadOnlyDictionary<string, string> payload,
+        string signature, string verifyingKey)
+    {
+        var payloadKeys = new List<string>(payload.Keys);
+        payloadKeys.Sort(StringComparer.Ordinal);
+        var sb = new StringBuilder();
+        sb.Append("{\n");
+        // Top-level keys, alphabetical: payload, signature, type, verifying_key.
+        sb.Append("  \"payload\": {\n");
+        for (int i = 0; i < payloadKeys.Count; i++)
+        {
+            sb.Append("    ");
+            AppendJsonString(sb, payloadKeys[i]);
+            sb.Append(": ");
+            AppendJsonString(sb, payload[payloadKeys[i]]);
+            sb.Append(i < payloadKeys.Count - 1 ? ",\n" : "\n");
+        }
+        sb.Append("  },\n");
+        sb.Append("  \"signature\": ");
+        AppendJsonString(sb, signature);
+        sb.Append(",\n  \"type\": ");
+        AppendJsonString(sb, type);
+        sb.Append(",\n  \"verifying_key\": ");
+        AppendJsonString(sb, verifyingKey);
+        sb.Append("\n}");
         return Encoding.UTF8.GetBytes(sb.ToString());
     }
 
