@@ -94,6 +94,12 @@ internal static class SignCli
             Console.Error.WriteLine($"mzprov sign: {e.Message}");
             return ExitCodes.SidecarError;
         }
+        catch (ArgumentException e)
+        {
+            // Bad arguments (e.g. a --sidecar that does not pair with the .raw).
+            Console.Error.WriteLine($"mzprov sign: {e.Message}");
+            return ExitCodes.Generic;
+        }
         catch (Exception e)
         {
             Console.Error.WriteLine($"mzprov sign: unexpected error: {e.GetType().Name}: {e.Message}");
@@ -115,8 +121,12 @@ internal static class SignCli
 
     internal static string DefaultKeyDirShared()
     {
-        string baseDir = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME")
-            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
+        // Match the reference's `os.environ.get("XDG_CONFIG_HOME") or ...`:
+        // an empty (not just unset) value falls back to ~/.config.
+        string? xdg = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+        string baseDir = string.IsNullOrEmpty(xdg)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config")
+            : xdg;
         return Path.Combine(baseDir, "timsim", "keys");
     }
 

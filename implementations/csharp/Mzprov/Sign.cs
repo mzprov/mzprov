@@ -153,7 +153,7 @@ internal static class Sign
             }
             string derivedStem = name.Substring(0, name.Length - ".provenance.json".Length);
             if (derivedStem != rawStem ||
-                Path.GetFullPath(Paths.DirName(sidecarPath)) != Path.GetFullPath(Paths.DirName(rawPath)))
+                RealDir(Paths.DirName(sidecarPath)) != RealDir(Paths.DirName(rawPath)))
             {
                 throw new ArgumentException(
                     $"--sidecar {sidecarPath} does not pair with {rawPath}: a .raw sidecar must be named " +
@@ -215,6 +215,23 @@ internal static class Sign
         string tmp = path + ".tmp";
         File.WriteAllBytes(tmp, bytes);
         File.Move(tmp, path, overwrite: true);
+    }
+
+    // Canonical absolute path, resolving a symlinked directory to its target
+    // so the .raw pairing check matches the reference's Path.resolve() rather
+    // than only normalizing (Path.GetFullPath). Best-effort: falls back to the
+    // normalized path if the directory does not exist or cannot be resolved.
+    private static string RealDir(string path)
+    {
+        try
+        {
+            var target = Directory.ResolveLinkTarget(path, returnFinalTarget: true);
+            return Path.GetFullPath(target?.FullName ?? path);
+        }
+        catch (Exception)
+        {
+            return Path.GetFullPath(path);
+        }
     }
 
     private static string Hex(byte[] b) => "sha256:" + Canonicalize.ToHexLower(b);
