@@ -284,6 +284,22 @@ internal static class Canonicalize
         return le;
     }
 
+    // Strict base64 decode matching Python base64.b64decode(validate=True):
+    // .NET's Convert.FromBase64String silently ignores embedded whitespace,
+    // so reject any whitespace first. Non-alphabet chars and bad padding are
+    // rejected by Convert.FromBase64String itself (FormatException).
+    public static byte[] DecodeBase64Strict(string text)
+    {
+        foreach (char c in text)
+        {
+            if (char.IsWhiteSpace(c))
+            {
+                throw new FormatException("base64 contains whitespace");
+            }
+        }
+        return Convert.FromBase64String(text);
+    }
+
     public static string ToHexLower(byte[] bytes)
     {
         var sb = new StringBuilder(bytes.Length * 2);

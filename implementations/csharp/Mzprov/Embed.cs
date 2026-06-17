@@ -170,7 +170,8 @@ internal static class Embed
         }
         try
         {
-            return Convert.FromBase64String(found[0]);
+            // Strict decode, matching the reference's base64.b64decode(validate=True).
+            return Canonicalize.DecodeBase64Strict(found[0]);
         }
         catch (FormatException e)
         {

@@ -307,7 +307,9 @@ internal static class CanonicalizeMzml
         byte[] raw;
         try
         {
-            raw = Convert.FromBase64String(text);
+            // Strict decode (no embedded whitespace), matching the reference's
+            // base64.b64decode(validate=True) after .strip().
+            raw = Canonicalize.DecodeBase64Strict(text);
         }
         catch (FormatException e)
         {
