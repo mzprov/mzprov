@@ -298,3 +298,43 @@ def test_verify_raw_rejects_ambiguous_raw_RAW_pairing(tmp_path):
         pytest.skip("case-insensitive filesystem: .raw and .RAW are the same file")
     with pytest.raises(MalformedSidecar):
         verify_sidecar(side)
+
+
+def test_find_sidecar_for_bare_raw(tmp_path):
+    """A bare .raw path auto-discovers its {stem}.provenance.json sidecar —
+    parity with .d / .mzML discovery (regression: bare .raw used to resolve
+    to None, so `mzprov verify run.raw` reported UNSIGNED)."""
+    from mzprov.verify import find_provenance_for, find_sidecar_for
+
+    raw_path = _make_dummy_raw(tmp_path, name="disc")
+    key_path = _write_temp_key(tmp_path)
+    sidecar_path = sign_raw_output(
+        raw_path=raw_path,
+        config_path=None,
+        experiment_name="disc",
+        private_key_path=key_path,
+    )
+
+    assert find_sidecar_for(raw_path) == sidecar_path
+    disc = find_provenance_for(raw_path)
+    assert disc is not None and disc[1] == sidecar_path
+    assert verify_sidecar(find_sidecar_for(raw_path)).overall_ok
+
+
+def test_find_sidecar_for_bare_raw_unique_sibling(tmp_path):
+    """When {stem}.provenance.json is absent, a bare .raw falls back to a
+    UNIQUE *.provenance.json sibling (and refuses on ambiguity)."""
+    from mzprov.verify import find_sidecar_for
+
+    raw_path = _make_dummy_raw(tmp_path, name="renamed")
+    key_path = _write_temp_key(tmp_path)
+    sidecar_path = sign_raw_output(
+        raw_path=raw_path,
+        config_path=None,
+        experiment_name="renamed",
+        private_key_path=key_path,
+    )
+    # rename the .raw so {stem}.provenance.json no longer pairs by name
+    moved = raw_path.with_name("other.raw")
+    raw_path.rename(moved)
+    assert find_sidecar_for(moved) == sidecar_path  # unique sibling fallback

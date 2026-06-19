@@ -61,8 +61,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "path",
         type=Path,
         help=(
-            "Path to a sidecar file, an experiment directory, or a .d directory. "
-            "The sidecar is discovered automatically."
+            "Path to a sidecar file, a .d directory, an mzML or .raw file, or an "
+            "experiment directory. The sidecar is discovered automatically."
         ),
     )
     parser.add_argument(
