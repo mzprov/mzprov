@@ -1,8 +1,10 @@
 """``mzprov sign`` command-line interface.
 
-Signs a Bruker timsTOF ``.d`` directory or an mzML file with an Ed25519
-provenance attestation. Wraps :func:`mzprov.sign.sign_simulation_output`
-(for ``.d``) and :func:`mzprov.sign.sign_mzml_output` (for mzML).
+Signs a Bruker timsTOF ``.d`` directory, an mzML file, or a Thermo/Waters
+``.raw`` file with an Ed25519 provenance attestation. Wraps
+:func:`mzprov.sign.sign_simulation_output` (for ``.d``),
+:func:`mzprov.sign.sign_mzml_output` (for mzML), and
+:func:`mzprov.sign.sign_raw_output` (for ``.raw`` — opaque, sidecar-only).
 
 The CLI is dispatched both as the unified ``mzprov sign`` subcommand
 (via :mod:`mzprov.main`) and as a flat ``mzprov-sign`` console script
@@ -29,7 +31,11 @@ from mzprov.errors import (
     ProvenanceError,
     SqliteNotQuiescent,
 )
-from mzprov.sign import sign_mzml_output, sign_simulation_output
+from mzprov.sign import (
+    sign_mzml_output,
+    sign_raw_output,
+    sign_simulation_output,
+)
 
 EXIT_OK = 0
 EXIT_GENERIC = 1
@@ -41,16 +47,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mzprov sign",
         description=(
-            "Sign a Bruker .d directory or an mzML file with an Ed25519 "
-            "provenance attestation. The resulting sidecar is written next "
-            "to the input as {stem}.provenance.json, with an optional copy "
-            "of the config file at {stem}.config.toml."
+            "Sign a Bruker .d directory, an mzML file, or a Thermo/Waters .raw "
+            "file with an Ed25519 provenance attestation. The resulting sidecar "
+            "is written next to the input as {stem}.provenance.json, with an "
+            "optional copy of the config file at {stem}.config.toml. (.raw is "
+            "opaque whole-file and sidecar-only — no --embed.)"
         ),
     )
     parser.add_argument(
         "path",
         type=Path,
-        help="Path to a .d directory or an mzML file to sign.",
+        help="Path to a .d directory, an mzML file, or a .raw file to sign.",
     )
     parser.add_argument(
         "--experiment-name",
@@ -136,11 +143,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def _detect_format(path: Path) -> str:
     """Return ``'d'`` for a Bruker .d directory, ``'mzml'`` for an mzML
-    file, or ``''`` (empty string) if the input is neither."""
+    file, ``'raw'`` for a Thermo/Waters .raw file, or ``''`` (empty
+    string) if the input is none of these."""
     if path.is_dir() and path.suffix == ".d":
         return "d"
     if path.is_file() and path.suffix.lower() == ".mzml":
         return "mzml"
+    if path.is_file() and path.suffix.lower() == ".raw":
+        return "raw"
     return ""
 
 
@@ -158,10 +168,9 @@ def main(argv: list[str] | None = None) -> int:
     fmt = _detect_format(args.path)
     if not fmt:
         print(
-            f"mzprov sign: {args.path} is neither a .d directory nor an "
-            f"mzML file. .d directories must have the .d suffix and "
-            f"contain analysis.tdf; mzML files must have the .mzML "
-            f"extension (case-insensitive).",
+            f"mzprov sign: {args.path} is not a signable artifact. Expected a "
+            f".d directory (with analysis.tdf), an .mzML file, or a .raw file "
+            f"(extensions case-insensitive).",
             file=sys.stderr,
         )
         return EXIT_SIDECAR_ERROR
@@ -169,6 +178,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.embed and args.sidecar is not None:
         print(
             "mzprov sign: --embed and --sidecar are mutually exclusive",
+            file=sys.stderr,
+        )
+        return EXIT_GENERIC
+
+    if fmt == "raw" and args.embed:
+        print(
+            "mzprov sign: --embed is not supported for .raw — the vendor binary "
+            "has no safe injection point, so .raw attestation is opaque and "
+            "sidecar-only (see spec/canonicalization-raw-v0.md).",
             file=sys.stderr,
         )
         return EXIT_GENERIC
@@ -193,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
                 private_key_path=args.private_key,
                 embed=args.embed,
             )
-        else:  # fmt == "mzml"
+        elif fmt == "mzml":
             sidecar_path = sign_mzml_output(
                 mzml_path=args.path,
                 config_path=args.config,
@@ -203,6 +221,16 @@ def main(argv: list[str] | None = None) -> int:
                 sidecar_path=args.sidecar,
                 private_key_path=args.private_key,
                 embed=args.embed,
+            )
+        else:  # fmt == "raw" — opaque whole-file, sidecar-only (no embed)
+            sidecar_path = sign_raw_output(
+                raw_path=args.path,
+                config_path=args.config,
+                experiment_name=args.experiment_name,
+                tool_name=args.tool_name,
+                tool_version=args.tool_version,
+                sidecar_path=args.sidecar,
+                private_key_path=args.private_key,
             )
     except (KeyNotFoundError, MalformedKey) as e:
         print(f"mzprov sign: key error: {e}", file=sys.stderr)

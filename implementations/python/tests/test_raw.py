@@ -300,6 +300,37 @@ def test_verify_raw_rejects_ambiguous_raw_RAW_pairing(tmp_path):
         verify_sidecar(side)
 
 
+def test_sign_cli_signs_raw(tmp_path):
+    """`mzprov sign <file.raw>` writes a sidecar and the result verifies —
+    CLI parity with the library sign_raw_output (regression: the CLI used
+    to reject .raw as 'not a .d or mzML')."""
+    from mzprov.sign_cli import main as sign_main
+
+    raw_path = _make_dummy_raw(tmp_path, name="clisign")
+    key_path = _write_temp_key(tmp_path)
+    rc = sign_main([
+        str(raw_path), "--experiment-name", "clisign",
+        "--tool-version", "test", "--key", str(key_path),
+    ])
+    assert rc == 0
+    sidecar = raw_path.with_name(raw_path.stem + ".provenance.json")
+    assert sidecar.is_file()
+    assert verify_sidecar(sidecar).overall_ok
+
+
+def test_sign_cli_raw_rejects_embed(tmp_path):
+    """--embed is refused for .raw (opaque, sidecar-only) — no sidecar written."""
+    from mzprov.sign_cli import main as sign_main
+
+    raw_path = _make_dummy_raw(tmp_path, name="cliembed")
+    key_path = _write_temp_key(tmp_path)
+    rc = sign_main([
+        str(raw_path), "--experiment-name", "x", "--embed", "--key", str(key_path),
+    ])
+    assert rc != 0
+    assert not raw_path.with_name(raw_path.stem + ".provenance.json").is_file()
+
+
 def test_find_sidecar_for_bare_raw(tmp_path):
     """A bare .raw path auto-discovers its {stem}.provenance.json sidecar —
     parity with .d / .mzML discovery (regression: bare .raw used to resolve
@@ -334,7 +365,6 @@ def test_find_sidecar_for_bare_raw_unique_sibling(tmp_path):
         experiment_name="renamed",
         private_key_path=key_path,
     )
-    # rename the .raw so {stem}.provenance.json no longer pairs by name
     moved = raw_path.with_name("other.raw")
     raw_path.rename(moved)
     assert find_sidecar_for(moved) == sidecar_path  # unique sibling fallback
