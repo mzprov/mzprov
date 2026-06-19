@@ -211,7 +211,7 @@ def _decode_hash(field_value: str) -> bytes:
 
 
 def find_sidecar_for(path: PathLike) -> Path | None:
-    """Given a path to a sidecar, an experiment dir, a .d, or an .mzML, return the sidecar path.
+    """Given a path to a sidecar, an experiment dir, a .d, an .mzML, or a .raw, return the sidecar path.
 
     Discovery rules:
         - If ``path`` is itself a sidecar JSON file, return it.
@@ -219,6 +219,10 @@ def find_sidecar_for(path: PathLike) -> Path | None:
           ``{stem}.provenance.json`` in the same directory first; if
           absent, fall back to a UNIQUE ``*.provenance.json`` sibling.
           If neither resolves unambiguously, return ``None``.
+        - If ``path`` is a ``.raw`` file (Thermo/Waters; opaque,
+          sidecar-only, see ``spec/canonicalization-raw-v0.md``), resolve
+          identically to the ``.mzML`` case: ``{stem}.provenance.json``
+          first, then a UNIQUE ``*.provenance.json`` sibling.
         - If ``path`` is a ``.d`` directory, the sidecar conventionally
           lives one level up with a stem-based pairing. Look for
           ``{stem}.provenance.json`` in ``path.parent`` (where ``stem``
@@ -254,6 +258,17 @@ def find_sidecar_for(path: PathLike) -> Path | None:
         # ambiguous, not best-effort: returning the first
         # lexicographically would silently pick a sidecar from a
         # different bundle that happens to share the parent directory.
+        siblings = sorted(path.parent.glob("*.provenance.json"))
+        if len(siblings) == 1:
+            return siblings[0]
+        return None
+
+    if path.is_file() and path.suffix.lower() == ".raw":
+        # Thermo/Waters .raw: opaque, sidecar-only (spec/canonicalization-raw-v0.md).
+        # Resolve like the .mzML case — {stem}.provenance.json, then a UNIQUE sibling.
+        candidate = path.with_name(path.stem + ".provenance.json")
+        if candidate.is_file():
+            return candidate
         siblings = sorted(path.parent.glob("*.provenance.json"))
         if len(siblings) == 1:
             return siblings[0]
