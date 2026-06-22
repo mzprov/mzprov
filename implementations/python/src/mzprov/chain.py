@@ -276,7 +276,8 @@ def verify_chain(
     registry: TrustedKeyRegistry | None = None,
     *,
     require_trusted_chain: bool = False,
-    _visited: set | None = None,
+    _verified: set | None = None,
+    _inprogress: set | None = None,
     _depth: int = 0,
     _nodes: list | None = None,
 ) -> ChainResult:
@@ -285,7 +286,8 @@ def verify_chain(
     `require_trusted_chain`."""
     sidecar_path = Path(sidecar_path)
     registry = registry if registry is not None else TrustedKeyRegistry.load()
-    _visited = _visited if _visited is not None else set()
+    _verified = _verified if _verified is not None else set()
+    _inprogress = _inprogress if _inprogress is not None else set()
     _nodes = _nodes if _nodes is not None else []
     if _depth > MAX_DEPTH:
         return ChainResult(EXIT_MALFORMED, "max depth exceeded", _nodes)
@@ -295,9 +297,12 @@ def verify_chain(
     except (OSError, MalformedSidecar) as e:
         return ChainResult(EXIT_MALFORMED, f"malformed/unreadable: {e}", _nodes)
     sc_hash = sha256_hex(data)
-    if sc_hash in _visited:
+    if sc_hash in _verified:
+        # shared ancestor reached via another edge — already fully verified, not a cycle
+        return ChainResult(EXIT_OK, "verified (shared ancestor)", _nodes)
+    if sc_hash in _inprogress:
         return ChainResult(EXIT_MALFORMED, "cycle detected", _nodes)
-    _visited.add(sc_hash)
+    _inprogress.add(sc_hash)
     p = sc.payload
 
     # 1. signature
@@ -334,13 +339,16 @@ def verify_chain(
         parent = _resolve_parent(sidecar_path.parent, ref.parent_sidecar_hash)
         if parent is None:
             return ChainResult(EXIT_MISSING_PROV, f"parent sidecar not found for '{ref.role}'", _nodes)
-        psc = ChainSidecar.from_json_bytes(parent.read_bytes())
+        try:
+            psc = ChainSidecar.from_json_bytes(parent.read_bytes())
+        except (OSError, MalformedSidecar) as e:
+            return ChainResult(EXIT_MALFORMED, f"parent sidecar malformed for '{ref.role}': {e}", _nodes)
         if psc.payload.artifact_content_hash != ref.content_hash:
             return ChainResult(EXIT_BROKEN_LINK, f"input '{ref.role}': content_hash != parent artifact", _nodes)
         if psc.payload.key_id != ref.parent_key_id:
             return ChainResult(EXIT_BROKEN_LINK, f"input '{ref.role}': parent key_id mismatch", _nodes)
         sub = verify_chain(parent, registry, require_trusted_chain=require_trusted_chain,
-                           _visited=_visited, _depth=_depth + 1, _nodes=_nodes)
+                           _verified=_verified, _inprogress=_inprogress, _depth=_depth + 1, _nodes=_nodes)
         if sub.code != EXIT_OK:
             return sub
 
@@ -350,4 +358,6 @@ def verify_chain(
     if require_trusted_chain and not trusted:
         return ChainResult(EXIT_TRUST, f"intermediate signer not trusted: {p.key_id}", _nodes)
 
+    _inprogress.discard(sc_hash)
+    _verified.add(sc_hash)  # memoize: a fully-verified node is a valid shared ancestor, not a cycle
     return ChainResult(EXIT_OK, "verified", _nodes)
