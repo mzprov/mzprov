@@ -2,10 +2,14 @@
 
 **Cryptographic provenance for mass spectrometry data.**
 
-`mzprov` is a format and protocol for signing mass spectrometry data files
-(Bruker `.d`, mzML) with verifiable, tamper-evident provenance metadata. It
-produces a portable JSON sidecar that any conforming implementation in any
-language can verify.
+`mzprov` is a format and protocol for signing mass spectrometry data files with
+verifiable, tamper-evident provenance metadata. It produces a portable JSON
+sidecar that any conforming implementation in any language can verify.
+
+Coverage today: Bruker `.d` and mzML by content canonicalization, Thermo and
+Waters `.raw` by an opaque whole-file digest, and SCIEX `.wiff` as a whole
+bundle, since its spectra live in a sibling `.wiff.scan` and hashing the anchor
+alone would attest almost nothing.
 
 The current scope is **simulator and converter self-disclosure**: a TimSim,
 Synthedia, SMITER, or msconvert run produces a sidecar that identifies the
@@ -40,10 +44,11 @@ when there is at least one implementation, test vectors, and approval — see
 | mzML canonicalization (spectrum content, all binary arrays) | v0 frozen |
 | Trust model (`--expected-key-id`, `--require-trusted`, `--public-key`) | v0 frozen |
 | Verifier exit codes (`0`–`7`) | v0 frozen |
-| Python reference implementation | shipping (lifted from `imspy_simulation.provenance`, 170 tests passing) |
+| Python reference implementation | shipping, 246 tests passing |
 | C# implementation | in development |
 | Cross-implementation conformance test vectors | v0 ships 16 vectors (2 valid, 11 invalid, 3 canonicalization fixtures) |
-| Vendor RAW canonicalization | out of scope for v0 |
+| `.raw` canonicalization (opaque whole-file, sidecar-only) | v0 frozen, `spec/canonicalization-raw-v0.md` |
+| `.wiff` bundle canonicalization (member names folded into the digest) | shipping in the Python implementation; spec text pending |
 | Repository countersignature | out of scope for v0 |
 | Hardware-backed key protection | out of scope for v0 |
 
@@ -81,6 +86,24 @@ cryptographic primitive. The verifier's check order and the
 label-vs-signer consistency defense (which prevents an attacker from
 relabeling `payload.key_id` to claim a different identity) are
 specified in [`spec/trust-model.md`](spec/trust-model.md) §1 and §5.
+
+## Known issues
+
+Found while using mzprov to attest a fabricated-data study, where a genuine acquisition had to be
+signed by one party and tampered with by another:
+
+- `mzprov sign --tool-name` is ignored for a `.d`. The payload records `simulator_name` regardless,
+  so a genuine acquisition is attested as simulator output, which is backwards for the case the
+  format most needs to serve.
+- With the sidecar removed but an embedded record present inside the `.d`, `verify` reports a
+  ground-truth path error instead of reporting the embedded record it just read. The most useful
+  signal in the file is the one it buries.
+- The sidecar path is derived from `--experiment-name`, so a name containing a slash silently
+  creates a directory. Pass `--sidecar` explicitly to avoid it.
+
+A useful property surfaced at the same time: because a `.d` carries its attestation inside
+`analysis.tdf`, deleting the external sidecar does not strip provenance. The embedded record
+survives, and its absence in a genuine acquisition makes its presence meaningful.
 
 ## What this repository does NOT claim
 

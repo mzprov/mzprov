@@ -29,16 +29,23 @@ from mzprov.canonicalize_raw import (
     canonicalize_raw,
     compose_raw_content_hash,
 )
+from mzprov.canonicalize_wiff import (
+    canonicalize_wiff,
+    compose_wiff_content_hash,
+)
 from mzprov.envelope import (
     ATTESTATION_TYPE,
     ATTESTATION_TYPE_MZML,
     ATTESTATION_TYPE_RAW,
+    ATTESTATION_TYPE_WIFF,
     MzmlPayload,
     MzmlSidecar,
     Payload,
     RawPayload,
     RawSidecar,
     Sidecar,
+    WiffPayload,
+    WiffSidecar,
 )
 from mzprov.errors import MissingArtifact, ProvenanceError
 from mzprov.paths import (
@@ -536,4 +543,91 @@ def sign_raw_output(
     # 6. Write the envelope to its sidecar transport (no embed for .raw).
     envelope_bytes = sidecar.to_json_bytes()
     write_sidecar_atomic(envelope_bytes, sidecar_path)
+    return sidecar_path
+
+
+def sign_wiff_output(
+    *,
+    wiff_path: PathLike,
+    config_path: PathLike | None,
+    experiment_name: str,
+    tool_name: str = "TimSim",
+    tool_version: str = "unknown",
+    sidecar_path: PathLike | None = None,
+    private_key_path: PathLike | None = None,
+) -> Path:
+    """Hash, sign, and write a provenance sidecar for a SCIEX ``.wiff`` BUNDLE.
+
+    A SCIEX ``.wiff`` is an opaque proprietary binary and — unlike a Thermo ``.raw`` —
+    a *bundle* (``.wiff`` + ``.wiff.scan`` + ``.wiff2`` + …). Its attestation is an opaque
+    whole-BUNDLE hash (``canonicalize_wiff``) and is **sidecar-only** (no embed transport),
+    mirroring ``sign_raw_output``. The sidecar is written beside the ``.wiff`` as
+    ``{wiff_stem}.provenance.json`` (the verifier finds the bundle by that stem + dir).
+    """
+    wiff_path = Path(wiff_path)
+    if not wiff_path.is_file():
+        raise MissingArtifact(f"wiff file does not exist: {wiff_path}")
+
+    if config_path is not None:
+        config_path = Path(config_path)
+        if not config_path.is_file():
+            raise MissingArtifact(f"config file does not exist: {config_path}")
+        config_bytes = config_path.read_bytes()
+    else:
+        config_bytes = b""
+
+    stem = wiff_path.name[: -len(".wiff")]  # strip the .wiff suffix (Path.stem is unsafe here)
+    if sidecar_path is None:
+        sidecar_path = wiff_path.with_name(stem + ".provenance.json")
+    else:
+        sidecar_path = Path(sidecar_path)
+        name = sidecar_path.name
+        if not name.endswith(".provenance.json"):
+            raise ValueError(
+                f"sidecar_path must end with '.provenance.json' (got {name!r})"
+            )
+        derived = name[: -len(".provenance.json")]
+        if derived != stem or sidecar_path.parent.resolve() != wiff_path.parent.resolve():
+            raise ValueError(
+                f"sidecar_path {sidecar_path} does not pair with wiff_path {wiff_path}: a "
+                f".wiff sidecar must be named '{stem}.provenance.json' beside the .wiff file"
+            )
+    config_copy_target = sidecar_config_path(sidecar_path)
+
+    # 1. Component hashes: the whole bundle + the config.
+    wiff_hash = canonicalize_wiff(wiff_path)
+    config_hash = canonicalize_bytes(config_bytes)
+    if config_path is not None:
+        config_copy_target.parent.mkdir(parents=True, exist_ok=True)
+        config_copy_target.write_bytes(config_bytes)
+
+    # 2. Compose the single content hash.
+    content_hash = compose_wiff_content_hash(wiff_hash=wiff_hash, config_hash=config_hash)
+
+    # 3-4. Keypair + payload.
+    keypair = _resolve_keypair(private_key_path)
+    payload = WiffPayload(
+        tool_name=str(tool_name),
+        tool_version=str(tool_version),
+        experiment_name=str(experiment_name),
+        config_hash=_hex(config_hash),
+        wiff_content_hash=_hex(wiff_hash),
+        content_hash=_hex(content_hash),
+        timestamp_utc=_utc_now_iso(),
+        key_id=keypair.key_id,
+        canonicalization_version="v0",
+    )
+
+    # 5. Sign the canonical payload.
+    signed_bytes = payload.to_canonical_json()
+    signature = keypair.private_key.sign(signed_bytes)
+    sidecar = WiffSidecar(
+        payload=payload,
+        signature=signature_to_b64(signature),
+        verifying_key=public_key_to_b64(keypair.public_key),
+        type=ATTESTATION_TYPE_WIFF,
+    )
+
+    # 6. Write the sidecar (no embed for .wiff).
+    write_sidecar_atomic(sidecar.to_json_bytes(), sidecar_path)
     return sidecar_path
