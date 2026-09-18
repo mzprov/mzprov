@@ -17,8 +17,9 @@ from mzprov.errors import MalformedSidecar, UnknownVersion
 ATTESTATION_TYPE = "timsim.provenance.v0"
 ATTESTATION_TYPE_MZML = "timsim.provenance.mzml.v0"
 ATTESTATION_TYPE_RAW = "timsim.provenance.raw.v0"
+ATTESTATION_TYPE_WIFF = "timsim.provenance.wiff.v0"
 SUPPORTED_TYPES = frozenset(
-    {ATTESTATION_TYPE, ATTESTATION_TYPE_MZML, ATTESTATION_TYPE_RAW}
+    {ATTESTATION_TYPE, ATTESTATION_TYPE_MZML, ATTESTATION_TYPE_RAW, ATTESTATION_TYPE_WIFF}
 )
 SUPPORTED_CANONICALIZATION_VERSIONS = frozenset({"v0"})
 
@@ -193,6 +194,60 @@ class RawPayload:
         if data["canonicalization_version"] not in SUPPORTED_CANONICALIZATION_VERSIONS:
             raise UnknownVersion(
                 f"raw sidecar canonicalization_version "
+                f"{data['canonicalization_version']!r} is not supported"
+            )
+        return cls(**{k: data[k] for k in required})
+
+
+@dataclass(frozen=True)
+class WiffPayload:
+    """The signed inner payload of a SCIEX ``.wiff`` provenance sidecar.
+
+    Like ``RawPayload`` a ``.wiff`` is an opaque proprietary binary (sidecar only, no
+    embed transport), but it is a *bundle* — the ``wiff_content_hash`` covers the whole
+    bundle (``.wiff`` + ``.wiff.scan`` + ``.wiff2`` + …), not a single file. Producer
+    fields are generic (``tool_*``) — any tool emitting a ``.wiff`` can sign it.
+    """
+
+    tool_name: str
+    tool_version: str
+    experiment_name: str
+    config_hash: str
+    wiff_content_hash: str
+    content_hash: str
+    timestamp_utc: str
+    key_id: str
+    canonicalization_version: str = "v0"
+
+    def to_canonical_json(self) -> bytes:
+        return json.dumps(
+            asdict(self),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WiffPayload":
+        required = {
+            "tool_name",
+            "tool_version",
+            "experiment_name",
+            "config_hash",
+            "wiff_content_hash",
+            "content_hash",
+            "timestamp_utc",
+            "key_id",
+            "canonicalization_version",
+        }
+        missing = required - data.keys()
+        if missing:
+            raise MalformedSidecar(
+                f"wiff sidecar payload is missing required fields: {sorted(missing)}"
+            )
+        if data["canonicalization_version"] not in SUPPORTED_CANONICALIZATION_VERSIONS:
+            raise UnknownVersion(
+                f"wiff sidecar canonicalization_version "
                 f"{data['canonicalization_version']!r} is not supported"
             )
         return cls(**{k: data[k] for k in required})
@@ -395,7 +450,61 @@ class RawSidecar:
         )
 
 
-def parse_sidecar(data: bytes) -> "Sidecar | MzmlSidecar | RawSidecar":
+@dataclass(frozen=True)
+class WiffSidecar:
+    """Sidecar envelope for SCIEX ``.wiff`` provenance attestations — same shape as
+    ``RawSidecar`` but the payload is a ``WiffPayload`` (opaque whole-BUNDLE hash) and the
+    type tag is ``timsim.provenance.wiff.v0``. Sidecar-only (no embedded transport)."""
+
+    payload: WiffPayload
+    signature: str
+    verifying_key: str
+    type: str = ATTESTATION_TYPE_WIFF
+
+    def to_json_bytes(self) -> bytes:
+        blob = {
+            "type": self.type,
+            "payload": asdict(self.payload),
+            "signature": self.signature,
+            "verifying_key": self.verifying_key,
+        }
+        return json.dumps(blob, indent=2, sort_keys=True, ensure_ascii=False).encode(
+            "utf-8"
+        )
+
+    @classmethod
+    def from_json_bytes(cls, data: bytes) -> "WiffSidecar":
+        try:
+            blob = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise MalformedSidecar(f"sidecar is not valid UTF-8 JSON: {e}") from e
+        if not isinstance(blob, dict):
+            raise MalformedSidecar("sidecar root must be a JSON object")
+        type_tag = blob.get("type")
+        if type_tag != ATTESTATION_TYPE_WIFF:
+            raise UnknownVersion(
+                f"sidecar type {type_tag!r} is not the wiff attestation type "
+                f"({ATTESTATION_TYPE_WIFF!r}); use parse_sidecar() to dispatch"
+            )
+        payload_dict = blob.get("payload")
+        if not isinstance(payload_dict, dict):
+            raise MalformedSidecar("sidecar.payload must be an object")
+        payload = WiffPayload.from_dict(payload_dict)
+        signature = blob.get("signature")
+        verifying_key = blob.get("verifying_key")
+        if not isinstance(signature, str) or not isinstance(verifying_key, str):
+            raise MalformedSidecar(
+                "sidecar.signature and sidecar.verifying_key must be strings"
+            )
+        return cls(
+            payload=payload,
+            signature=signature,
+            verifying_key=verifying_key,
+            type=type_tag,
+        )
+
+
+def parse_sidecar(data: bytes) -> "Sidecar | MzmlSidecar | RawSidecar | WiffSidecar":
     """Parse a sidecar JSON blob and return the right concrete type.
 
     Looks at the ``type`` field at the top of the envelope and dispatches
@@ -419,6 +528,8 @@ def parse_sidecar(data: bytes) -> "Sidecar | MzmlSidecar | RawSidecar":
         return MzmlSidecar.from_json_bytes(data)
     if type_tag == ATTESTATION_TYPE_RAW:
         return RawSidecar.from_json_bytes(data)
+    if type_tag == ATTESTATION_TYPE_WIFF:
+        return WiffSidecar.from_json_bytes(data)
     raise UnknownVersion(
         f"sidecar type {type_tag!r} is not supported "
         f"(supported: {sorted(SUPPORTED_TYPES)})"

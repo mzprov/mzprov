@@ -118,6 +118,11 @@ def sign_raw_output(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
+def sign_wiff_output(*args, **kwargs):
+    from mzprov.sign import sign_wiff_output as _impl
+    return _impl(*args, **kwargs)
+
+
 def verify_sidecar(*args, **kwargs):
     from mzprov.verify import verify_sidecar as _impl
     return _impl(*args, **kwargs)

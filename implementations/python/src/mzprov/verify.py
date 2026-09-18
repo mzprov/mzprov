@@ -36,16 +36,22 @@ from mzprov.canonicalize_raw import (
     canonicalize_raw,
     compose_raw_content_hash,
 )
+from mzprov.canonicalize_wiff import (
+    canonicalize_wiff,
+    compose_wiff_content_hash,
+)
 from mzprov.envelope import (
     ATTESTATION_TYPE,
     ATTESTATION_TYPE_MZML,
     ATTESTATION_TYPE_RAW,
+    ATTESTATION_TYPE_WIFF,
     MzmlPayload,
     MzmlSidecar,
     Payload,
     RawPayload,
     RawSidecar,
     Sidecar,
+    WiffSidecar,
     parse_sidecar,
 )
 from mzprov.errors import (
@@ -267,6 +273,18 @@ def find_sidecar_for(path: PathLike) -> Path | None:
         # Thermo/Waters .raw: opaque, sidecar-only (spec/canonicalization-raw-v0.md).
         # Resolve like the .mzML case — {stem}.provenance.json, then a UNIQUE sibling.
         candidate = path.with_name(path.stem + ".provenance.json")
+        if candidate.is_file():
+            return candidate
+        siblings = sorted(path.parent.glob("*.provenance.json"))
+        if len(siblings) == 1:
+            return siblings[0]
+        return None
+
+    if path.is_file() and path.name.lower().endswith(".wiff"):
+        # SCIEX .wiff: opaque bundle, sidecar-only. Sidecar is {wiff_stem}.provenance.json
+        # (stem = basename minus '.wiff'), then a UNIQUE sibling fallback.
+        stem = path.name[: -len(".wiff")]
+        candidate = path.with_name(stem + ".provenance.json")
         if candidate.is_file():
             return candidate
         siblings = sorted(path.parent.glob("*.provenance.json"))
@@ -571,6 +589,16 @@ def verify_sidecar(
         )
     if isinstance(parsed, RawSidecar):
         return _verify_raw_sidecar(
+            sidecar_path,
+            parsed,
+            public_key_override=public_key_override,
+            config_path_override=config_path_override,
+            expected_key_id=expected_key_id,
+            require_trusted=require_trusted,
+            trusted_registry_path=trusted_registry_path,
+        )
+    if isinstance(parsed, WiffSidecar):
+        return _verify_wiff_sidecar(
             sidecar_path,
             parsed,
             public_key_override=public_key_override,
@@ -1519,6 +1547,266 @@ def _verify_raw_payload(
     else:
         composed = compose_raw_content_hash(
             raw_hash=raw_hash,
+            config_hash=config_hash,
+        )
+        checks.append(
+            FieldCheck(
+                name="content_hash",
+                expected=payload.content_hash,
+                actual=_hex(composed),
+                status=(
+                    STATUS_OK if payload.content_hash == _hex(composed) else STATUS_MISMATCH
+                ),
+            )
+        )
+
+    # Verify signature against the canonical payload bytes.
+    public_key = derived_signer_pubkey
+    try:
+        signature_bytes = signature_from_b64(sidecar.signature)
+    except (ValueError, MalformedSidecar) as e:
+        raise MalformedSidecar(
+            f"sidecar signature field is not decodable: {e}"
+        ) from e
+
+    signed_bytes = payload.to_canonical_json()
+
+    try:
+        public_key.verify(signature_bytes, signed_bytes)
+        signature_ok = True
+    except InvalidSignature:
+        signature_ok = False
+    except Exception:
+        signature_ok = False
+
+    trust = _evaluate_trust(
+        actual_key_id=derived_signer_key_id,
+        actual_pubkey=derived_signer_pubkey,
+        expected_key_id=expected_key_id,
+        require_trusted=require_trusted,
+        trusted_registry_path=trusted_registry_path,
+    )
+
+    overall_ok = (
+        signature_ok
+        and all(c.status == STATUS_OK for c in checks)
+        and trust.ok
+    )
+
+    return VerificationResult(
+        sidecar_path=sidecar_path,
+        payload=payload,
+        checks=checks,
+        signature_ok=signature_ok,
+        overall_ok=overall_ok,
+        trust=trust,
+        transport=transport,
+    )
+
+
+def _find_wiff_for_sidecar(sidecar_path: Path) -> Path | None:
+    """Find the ``.wiff`` that this sidecar attests.
+
+    Like the ``.raw`` path, ``.wiff`` discovery is **exact** and
+    independent of the payload: a sidecar at ``{stem}.provenance.json``
+    attests the file ``{stem}.wiff`` in the same directory. There is no
+    unique-sibling fallback — the ``.wiff`` attestation is sidecar-only
+    and the pairing is always by stem. Note the discovered ``.wiff`` is
+    only the bundle *anchor*; the hash covers every sibling bundle member
+    (``.wiff.scan``, ``.wiff2``, …) via ``canonicalize_wiff``. Returns
+    ``None`` if the exact file does not exist.
+    """
+    name = sidecar_path.name
+    if name.endswith(".provenance.json"):
+        stem = name[: -len(".provenance.json")]
+    else:
+        stem = sidecar_path.stem
+
+    parent = sidecar_path.parent
+    # Accept ``{stem}.wiff``, tolerating ``{stem}.WIFF`` on case-sensitive filesystems
+    # that store an upper-case extension. If BOTH exist as DISTINCT files the pairing is
+    # ambiguous — refuse rather than silently pick one (dedup by resolved path so a
+    # case-insensitive filesystem, where the two names are one file, is not ambiguous).
+    found: list[Path] = []
+    for suffix in (".wiff", ".WIFF"):
+        candidate = parent / (stem + suffix)
+        if candidate.is_file():
+            key = candidate.resolve()
+            if not any(p.resolve() == key for p in found):
+                found.append(candidate)
+    if len(found) > 1:
+        raise MalformedSidecar(
+            f"ambiguous .wiff pairing for sidecar {sidecar_path}: both {stem}.wiff and "
+            f"{stem}.WIFF exist"
+        )
+    return found[0] if found else None
+
+
+def _verify_wiff_sidecar(
+    sidecar_path: Path,
+    sidecar: WiffSidecar,
+    *,
+    public_key_override: PathLike | None,
+    config_path_override: PathLike | None,
+    expected_key_id: str | None,
+    require_trusted: bool,
+    trusted_registry_path: PathLike | None,
+) -> VerificationResult:
+    """Verify a ``.wiff`` sidecar by recomputing the opaque bundle hash and signature.
+
+    Same defense layering as the .d / mzML / .raw paths:
+      - Derive the actual signer key id from sidecar.verifying_key.
+      - Enforce payload.key_id consistency.
+      - --public-key is a byte-for-byte consistency check.
+      - Trust pinning (--expected-key-id, --require-trusted) layers on top.
+      - The .wiff bundle is discovered independently of the payload, by the
+        exact ``{sidecar_stem}.wiff`` pairing.
+
+    There is no embedded transport for ``.wiff``, so this is the only
+    entry point into the wiff verification path.
+    """
+    derived_signer_pubkey, derived_signer_key_id = _validate_signer_identity(
+        sidecar, public_key_override=public_key_override
+    )
+
+    # Discover the .wiff bundle anchor independently of the payload, by the
+    # exact {sidecar_stem}.wiff pairing. If that file is missing this is a
+    # structural error: the artifact the sidecar attests is gone.
+    wiff_path = _find_wiff_for_sidecar(sidecar_path)
+    if wiff_path is None:
+        name = sidecar_path.name
+        if name.endswith(".provenance.json"):
+            stem = name[: -len(".provenance.json")]
+        else:
+            stem = sidecar_path.stem
+        raise MissingArtifact(
+            f"could not find the .wiff file for sidecar {sidecar_path.name} "
+            f"(looked for {sidecar_path.parent / (stem + '.wiff')})"
+        )
+
+    # Conventional config copy for the JSON transport — shared
+    # convention from mzprov.paths. Anchored on the sidecar's name,
+    # never on a payload field.
+    conventional_config_path = sidecar_config_path(sidecar_path)
+
+    return _verify_wiff_payload(
+        sidecar=sidecar,
+        sidecar_path=sidecar_path,
+        wiff_path=wiff_path,
+        conventional_config_path=conventional_config_path,
+        config_path_override=config_path_override,
+        derived_signer_pubkey=derived_signer_pubkey,
+        derived_signer_key_id=derived_signer_key_id,
+        expected_key_id=expected_key_id,
+        require_trusted=require_trusted,
+        trusted_registry_path=trusted_registry_path,
+        transport="sidecar-json",
+    )
+
+
+def _verify_wiff_payload(
+    *,
+    sidecar: WiffSidecar,
+    sidecar_path: Path,
+    wiff_path: Path,
+    conventional_config_path: Path,
+    config_path_override: PathLike | None,
+    derived_signer_pubkey,
+    derived_signer_key_id: str,
+    expected_key_id: str | None,
+    require_trusted: bool,
+    trusted_registry_path: PathLike | None,
+    transport: str,
+) -> VerificationResult:
+    """Run integrity + trust checks for an already-parsed ``.wiff`` sidecar.
+
+    Mirror of ``_verify_raw_payload`` with the opaque whole-bundle hash in
+    place of the single-file hash. There is no embedded transport for
+    ``.wiff``, so ``transport`` is always ``"sidecar-json"``; the
+    parameter is kept for symmetry with the other payload verifiers.
+    """
+    payload = sidecar.payload
+
+    # Recompute the opaque whole-bundle wiff hash (covers every member:
+    # .wiff, .wiff.scan, .wiff2, ...).
+    wiff_hash = canonicalize_wiff(wiff_path)
+
+    # Resolve the config file: explicit override wins, otherwise look
+    # for the conventional copy next to the sidecar. Same convention as
+    # the .d / mzML / .raw paths: never fall back to the payload's signed value.
+    config_hash: bytes | None = None
+    config_check_status = STATUS_UNCHECKED
+    config_check_actual = ""
+    config_check_detail = ""
+
+    if config_path_override is not None:
+        config_resolved = Path(config_path_override)
+        if not config_resolved.is_file():
+            raise MissingArtifact(
+                f"--config override points at a missing file: {config_resolved}"
+            )
+        config_hash = canonicalize_bytes(config_resolved.read_bytes())
+        config_check_actual = _hex(config_hash)
+        config_check_status = (
+            STATUS_OK if payload.config_hash == config_check_actual else STATUS_MISMATCH
+        )
+    else:
+        if conventional_config_path.is_file():
+            config_hash = canonicalize_bytes(conventional_config_path.read_bytes())
+            config_check_actual = _hex(config_hash)
+            config_check_status = (
+                STATUS_OK if payload.config_hash == config_check_actual else STATUS_MISMATCH
+            )
+        elif payload.config_hash == _hex(canonicalize_bytes(b"")):
+            # The signer used config_path=None, so the signed config_hash
+            # is sha256(b""). We can recompute that without a file and
+            # compare; this is NOT tautological because b"" is a fixed
+            # constant, not a value pulled from the payload.
+            config_hash = canonicalize_bytes(b"")
+            config_check_actual = _hex(config_hash)
+            config_check_status = STATUS_OK
+        else:
+            config_check_detail = (
+                f"no config file found at {conventional_config_path} "
+                f"(pass --config to override)"
+            )
+
+    checks: list[FieldCheck] = []
+
+    expected_w = payload.wiff_content_hash
+    actual_w = _hex(wiff_hash)
+    checks.append(
+        FieldCheck(
+            name="wiff_content_hash",
+            expected=expected_w,
+            actual=actual_w,
+            status=STATUS_OK if expected_w == actual_w else STATUS_MISMATCH,
+        )
+    )
+
+    checks.append(
+        FieldCheck(
+            name="config_hash",
+            expected=payload.config_hash,
+            actual=config_check_actual,
+            status=config_check_status,
+            detail=config_check_detail,
+        )
+    )
+
+    if config_hash is None:
+        checks.append(
+            FieldCheck(
+                name="content_hash",
+                expected=payload.content_hash,
+                actual="",
+                status=STATUS_UNCHECKED,
+                detail="cannot recompose content_hash without the config file",
+            )
+        )
+    else:
+        composed = compose_wiff_content_hash(
+            wiff_hash=wiff_hash,
             config_hash=config_hash,
         )
         checks.append(
