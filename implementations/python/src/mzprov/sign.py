@@ -113,6 +113,7 @@ def sign_simulation_output(
     sidecar_path: PathLike | None = None,
     private_key_path: PathLike | None = None,
     embed: bool = False,
+    simulator_name: str = "TimSim",
 ) -> Path:
     """Hash, sign, and write a provenance sidecar for a TimSim output.
 
@@ -145,6 +146,10 @@ def sign_simulation_output(
         well-defined: the hash computed on the .d before embedding
         equals the hash computed after.
         If False (default), the JSON sidecar transport is used.
+    simulator_name
+        The producing tool recorded in the payload. Defaults to
+        "TimSim"; set it when signing a ``.d`` that TimSim did not make,
+        such as a genuine acquisition.
 
     Returns
     -------
@@ -185,6 +190,17 @@ def sign_simulation_output(
         config_copy_path = embedded_d_config_path(d_path)
     else:
         if sidecar_path is None:
+            # The name becomes a filename here; a separator in it would
+            # silently place the sidecar in a subdirectory.
+            if (
+                "/" in experiment_name
+                or "\\" in experiment_name
+                or experiment_name in ("", ".", "..")
+            ):
+                raise ValueError(
+                    f"experiment_name {experiment_name!r} cannot name a "
+                    f"sidecar file; pass sidecar_path explicitly"
+                )
             sidecar_path = d_path.parent / f"{experiment_name}.provenance.json"
         else:
             sidecar_path = Path(sidecar_path)
@@ -219,7 +235,7 @@ def sign_simulation_output(
 
     # 4. Build the payload.
     payload = Payload(
-        simulator_name="TimSim",
+        simulator_name=str(simulator_name),
         simulator_version=str(simulator_version),
         experiment_name=str(experiment_name),
         config_hash=_hex(config_hash),

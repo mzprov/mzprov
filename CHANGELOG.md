@@ -12,6 +12,8 @@ applies to the Python reference implementation. The specification version
 
 ### Added
 
+- `mzprov chain sign` and `mzprov chain verify`: the command line for
+  provenance chains, which were available only as Python functions.
 - Cross-implementation conformance CI (`.github/workflows/conformance.yml`):
   runs the Python unit suite plus a language-agnostic black-box harness
   (`test-vectors/_harness/run_conformance.py`) over `test-vectors/` on every
@@ -35,6 +37,23 @@ applies to the Python reference implementation. The specification version
   `implementations/python/`, CC0 1.0 for `test-vectors/`.
 - Top-level `README.md`, `CONTRIBUTING.md`, and `LICENSE` umbrella document.
 - Stub `README.md` in each subdirectory describing its scope and status.
+
+### Fixed
+
+- Chain verification reports a malformed sidecar or graph as `3`, as v0
+  does, instead of `4`, which v0 reserves for an unsigned file. Chain-only
+  outcomes keep `8` (broken link) and `9` (missing provenance).
+- `mzprov sign --tool-name` is now recorded for a `.d`. It was ignored and the
+  payload always said `TimSim`, so a genuine acquisition was attested as
+  simulator output. `sign_simulation_output` gains a `simulator_name`
+  argument, defaulting to `"TimSim"`.
+- When an embedded `.d` record references a missing ground-truth DB, `verify`
+  still exits `3` (spec/trust-model.md 3.3) but the error now names the
+  embedded record, its signer, experiment and key, instead of only a path.
+- An `--experiment-name` containing a path separator no longer creates a
+  directory for the sidecar. It is rejected unless `--sidecar` names the file.
+- The real-data tests read their inputs from `MZPROV_*` environment variables
+  instead of paths on one machine.
 
 ### Notes
 
