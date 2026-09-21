@@ -606,6 +606,62 @@ def test_sign_cli_d_signs_and_verifies(tmp_path):
     )
 
 
+def test_sign_cli_d_records_tool_name(tmp_path):
+    """--tool-name is recorded for a .d, so a genuine acquisition is not
+    attested as TimSim output."""
+    import json
+
+    from mzprov._fixtures import make_minimal_d
+    from mzprov.sign_cli import EXIT_OK
+    from mzprov.sign_cli import main as sign_main
+
+    d_path = make_minimal_d(tmp_path, name="acq")
+    config_path = tmp_path / "acq.toml"
+    config_path.write_bytes(b'[experiment]\nname = "acq"\n')
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+
+    rc = sign_main([
+        str(d_path),
+        "--experiment-name", "acq",
+        "--config", str(config_path),
+        "--tool-name", "timsTOF-acquisition",
+        "--tool-version", "1.0",
+        "--key", str(key_dir),
+    ])
+    assert rc == EXIT_OK
+    blob = json.loads((tmp_path / "acq.provenance.json").read_text())
+    assert blob["payload"]["simulator_name"] == "timsTOF-acquisition"
+
+
+def test_sign_cli_d_rejects_experiment_name_with_separator(tmp_path):
+    """A slash in --experiment-name used to create a directory for the
+    sidecar. Refuse it, and accept it once --sidecar names the file."""
+    from mzprov._fixtures import make_minimal_d
+    from mzprov.sign_cli import EXIT_GENERIC, EXIT_OK
+    from mzprov.sign_cli import main as sign_main
+
+    d_path = make_minimal_d(tmp_path, name="slash")
+    config_path = tmp_path / "slash.toml"
+    config_path.write_bytes(b'[experiment]\nname = "slash"\n')
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+    base = [
+        str(d_path),
+        "--experiment-name", "cohort/run-01",
+        "--config", str(config_path),
+        "--tool-version", "0.0.1",
+        "--key", str(key_dir),
+    ]
+
+    assert sign_main(base) == EXIT_GENERIC
+    assert not (tmp_path / "cohort").exists()
+
+    sidecar = tmp_path / "run-01.provenance.json"
+    assert sign_main(base + ["--sidecar", str(sidecar)]) == EXIT_OK
+    assert sidecar.is_file()
+
+
 def test_sign_cli_mzml_signs_and_verifies(tmp_path):
     """mzprov sign on an mzML file writes a sidecar that verifies."""
     from mzprov import verify_sidecar

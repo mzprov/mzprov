@@ -210,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
                 sidecar_path=args.sidecar,
                 private_key_path=args.private_key,
                 embed=args.embed,
+                simulator_name=args.tool_name,
             )
         elif fmt == "mzml":
             sidecar_path = sign_mzml_output(
@@ -246,6 +247,9 @@ def main(argv: list[str] | None = None) -> int:
     except ProvenanceError as e:
         print(f"mzprov sign: provenance error: {e}", file=sys.stderr)
         return EXIT_SIDECAR_ERROR
+    except ValueError as e:
+        print(f"mzprov sign: {e}", file=sys.stderr)
+        return EXIT_GENERIC
     except Exception as e:  # noqa: BLE001
         print(
             f"mzprov sign: unexpected error: {type(e).__name__}: {e}",

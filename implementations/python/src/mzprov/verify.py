@@ -675,9 +675,19 @@ def _verify_d_payload(
     ground_truth_hash: bytes | None = None
     if payload.ground_truth_hash:
         if not ground_truth_path.is_file():
+            # Still MissingArtifact (spec/trust-model.md 3.3), but name the
+            # record that was found: when the JSON sidecar has been removed
+            # the embedded record is the most useful signal in the file.
+            source = (
+                f"provenance record embedded in {d_path / 'analysis.tdf'}"
+                if transport == "embedded-d"
+                else f"sidecar {sidecar_path}"
+            )
             raise MissingArtifact(
-                f"sidecar references a ground-truth DB but none was found at "
-                f"{ground_truth_path}"
+                f"{source} (simulator_name={payload.simulator_name!r}, "
+                f"experiment_name={payload.experiment_name!r}, "
+                f"key_id={payload.key_id}) references a ground-truth DB but "
+                f"none was found at {ground_truth_path}"
             )
         ground_truth_hash = canonicalize_sqlite(ground_truth_path)
 

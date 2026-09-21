@@ -275,6 +275,39 @@ def test_sidecar_with_ground_truth_but_db_missing(tmp_path):
         verify_sidecar(sidecar)
 
 
+def test_embedded_record_named_when_ground_truth_missing(tmp_path, capsys):
+    """Sidecar removed, embedded record present, ground truth gone: still
+    SIDECAR_ERROR per spec/trust-model.md 3.3, but the error names the
+    embedded record rather than reporting only a path."""
+    from mzprov.cli import EXIT_SIDECAR_ERROR
+    from mzprov.cli import main as verify_main
+
+    d = make_minimal_d(tmp_path, name="x")
+    gt = make_minimal_ground_truth(tmp_path)
+    config = tmp_path / "c.toml"
+    config.write_bytes(b"[experiment]\nexperiment_name = \"x\"\n")
+    key_dir = tmp_path / "keys"
+    write_keypair(generate_keypair(), key_dir)
+    sign_simulation_output(
+        d_path=d,
+        ground_truth_path=gt,
+        config_path=config,
+        experiment_name="spiked",
+        simulator_version="test",
+        private_key_path=key_dir / "signing_key.pem",
+        embed=True,
+    )
+
+    gt.unlink()
+
+    rc = verify_main([str(d)])
+    err = capsys.readouterr().err
+    assert rc == EXIT_SIDECAR_ERROR
+    assert "embedded in" in err
+    assert "simulator_name='TimSim'" in err
+    assert "experiment_name='spiked'" in err
+
+
 # ---------------------------------------------------------------------------
 # Sign-time errors
 # ---------------------------------------------------------------------------
