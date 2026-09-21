@@ -24,9 +24,10 @@ size and producer, including a real Bruker timsTOF mzML conversion
   - Resolution50000_32bit.mzML (2.9 MB, 32-bit float precision)
   - 20190227_TIMS2 Yeast Trypsin (51 MB, real Bruker timsTOF conversion)
 
-All tests are marked @pytest.mark.slow and skip cleanly if the source
-files are missing — so a CI machine without the local datasets does
-not break.
+All tests are marked @pytest.mark.slow and read their inputs from
+MZPROV_* environment variables (see below). They skip cleanly when a
+variable is unset or its file is missing, so a machine without the
+datasets does not break.
 
 The point is correctness, not performance. We assert that:
 
@@ -38,6 +39,7 @@ The point is correctness, not performance. We assert that:
 
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 import time
@@ -70,35 +72,35 @@ pytestmark = pytest.mark.slow
 #  | Sim  | TIMSIM-DDA-DEMO            | TIMSIM-HeLa10K-001          |
 #  +------+----------------------------+-----------------------------+
 
-REAL_DDA_D = Path("/scratch/raw/dda/blanks/K240723_001_S1-A2_1_2772.d")
-REAL_DIA_D = Path("/media/hd02/data/raw/synchro/synchro-hela.d")
-# A durable TimSim DDA output from the paper's examples directory.
-# 8256 frames, 19k PasefFrameMsMsInfo rows, 19k Precursors — much
-# more representative than a freshly-generated few-peptide quickie.
-SIM_DDA_D = Path(
-    "/media/hd02/timsim/submission/examples/"
-    "TIMSIM-DDA-HELA-10K-001/TIMSIM-DDA-HELA-10K-001.d"
-)
-SIM_DIA_D = Path("/scratch/timsim-demo/TIMSIM-HeLa10K-001/TIMSIM-HeLa10K-001.d")
+# Paths come from the environment so no machine's layout is baked in;
+# an unset variable skips the test like a missing file does.
+
+
+def _data_path(var: str) -> Path | None:
+    value = os.environ.get(var)
+    return Path(value) if value else None
+
+
+REAL_DDA_D = _data_path("MZPROV_REAL_DDA_D")
+REAL_DIA_D = _data_path("MZPROV_REAL_DIA_D")
+# A durable TimSim DDA output: many frames, PasefFrameMsMsInfo rows and
+# Precursors, much more representative than a few-peptide quickie.
+SIM_DDA_D = _data_path("MZPROV_SIM_DDA_D")
+SIM_DIA_D = _data_path("MZPROV_SIM_DIA_D")
 
 # mzML diversity:
 #   - small Thermo->ProteoWizard, 64-bit float (sage test fixture)
 #   - 32-bit float precision (exercises the f32 code path on real data)
 #   - real Bruker timsTOF conversion (the kind of file a real
 #     collaborator's converter will produce)
-THERMO_MSCONVERT_MZML = Path(
-    "/home/administrator/Documents/promotion/sage/tests/LQSRPAAPPAPGPGQLTLR.mzML"
-)
-F32_MZML = Path(
-    "/media/hd01/Scrapyard/unlipid/data/07232020_Resolution50000_32bit.mzML"
-)
-BRUKER_TIMSTOF_MZML = Path(
-    "/media/hd02/data/raw/dda/ccs/Raw_Yeast_Trp/"
-    "20190227_TIMS2_FlMe_SA_200ng_Yeast_Trypsin_IRT_Fraction_17_A6_01_4229_uncalibrated.mzML"
-)
+THERMO_MSCONVERT_MZML = _data_path("MZPROV_THERMO_MSCONVERT_MZML")
+F32_MZML = _data_path("MZPROV_F32_MZML")
+BRUKER_TIMSTOF_MZML = _data_path("MZPROV_BRUKER_TIMSTOF_MZML")
 
 
-def _skip_if_no_d(d: Path, label: str) -> None:
+def _skip_if_no_d(d: Path | None, label: str) -> None:
+    if d is None:
+        pytest.skip(f"{label} .d not configured")
     if not d.is_dir():
         pytest.skip(f"{label} .d not present at {d}")
     for child in ("analysis.tdf", "analysis.tdf_bin"):
@@ -106,7 +108,9 @@ def _skip_if_no_d(d: Path, label: str) -> None:
             pytest.skip(f"{label}: {d / child} is missing")
 
 
-def _skip_if_no_mzml(p: Path, label: str) -> None:
+def _skip_if_no_mzml(p: Path | None, label: str) -> None:
+    if p is None:
+        pytest.skip(f"{label} mzml not configured")
     if not p.is_file():
         pytest.skip(f"{label} mzml not present at {p}")
 
