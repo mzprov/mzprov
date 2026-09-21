@@ -8,7 +8,19 @@ applies to the Python reference implementation. The specification version
 (`canonicalization_version` in the sidecar) evolve independently — see
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-## Unreleased
+## 0.1.1 — 2026-09-21
+
+### Fixed
+
+- Package metadata: the licence is declared as the SPDX expression
+  `Apache-2.0` instead of the full licence text, and the project links
+  (homepage, source, specification, changelog, issues) appear on PyPI.
+- CI and release workflows use current major versions of the GitHub actions,
+  off the deprecated Node.js 20 runtime.
+
+## 0.1.0 — 2026-09-21
+
+First release on PyPI.
 
 ### Added
 
