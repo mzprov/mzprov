@@ -106,7 +106,7 @@ itself is untouched.
 
 ```sh
 $ mzprov verify experiment-json
-TimSim provenance verification
+mzprov provenance verification
   experiment:        demo-json
   producer:          TimSim unknown
   signed at:         …
@@ -132,7 +132,7 @@ $ sqlite3 experiment-json/sample.d/analysis.tdf \
     "UPDATE Frames SET Time = 999.0 WHERE Id = 1;"
 
 $ mzprov verify experiment-json
-TimSim provenance verification
+mzprov provenance verification
   experiment:        demo-json
   …
 
@@ -248,7 +248,7 @@ authoritative for both. Only the storage differs.
 
 ```sh
 $ mzprov verify experiment-embed
-TimSim provenance verification
+mzprov provenance verification
   experiment:        demo-embed
   …
    d_content_hash  OK         (sha256:2926eb20…)

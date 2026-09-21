@@ -27,7 +27,7 @@ from an instrument, or that the experiment was sound.
 pip install mzprov
 ```
 
-Python 3.11 to 3.13. The only runtime dependency is `cryptography`.
+Python 3.8 to 3.13. The only runtime dependency is `cryptography`.
 
 ## Use
 
@@ -50,7 +50,7 @@ mzprov verify run.d --require-trusted
 ```
 
 The first `sign` generates a signing key at
-`~/.config/timsim/keys/signing_key.pem` and prints its key id. Manage keys
+`~/.config/mzprov/keys/signing_key.pem` and prints its key id. Manage keys
 and the trusted-keys registry with `mzprov keys show|export|trust|list|untrust`.
 
 Exit codes are fixed by the specification: `0` verified, `1` generic error,

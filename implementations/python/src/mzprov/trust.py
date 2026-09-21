@@ -12,7 +12,7 @@ trusted by someone in particular". Two complementary mechanisms:
    user asserts at the command line that they expect *this exact key id*.
    No registry involved.
 
-2. **Trusted-keys registry** at ``~/.config/timsim/trusted_keys.json``,
+2. **Trusted-keys registry** at ``~/.config/mzprov/trusted_keys.json``,
    populated explicitly by the user via the ``timsim-keys trust ...``
    command. ``timsim-verify --require-trusted`` then checks that the
    sidecar's signing key is in the registry. The registry stores the
@@ -121,13 +121,19 @@ class TrustedKey:
 
 
 def default_registry_path() -> Path:
-    """Return the default registry path: ``~/.config/timsim/trusted_keys.json``.
+    """Return the default registry path: ``~/.config/mzprov/trusted_keys.json``.
 
-    Honors ``XDG_CONFIG_HOME`` if set, matching the convention used by
-    keys.py for the signing key location.
+    Honors ``XDG_CONFIG_HOME`` like the signing key location. Falls back to
+    the pre-0.1.2 ``~/.config/timsim/trusted_keys.json`` when that exists and
+    the new file does not, so existing trust grants keep working.
     """
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return Path(base) / "timsim" / _REGISTRY_FILENAME
+    from mzprov.keys import config_base
+
+    new = config_base() / "mzprov" / _REGISTRY_FILENAME
+    legacy = config_base() / "timsim" / _REGISTRY_FILENAME
+    if not new.exists() and legacy.exists():
+        return legacy
+    return new
 
 
 @dataclass

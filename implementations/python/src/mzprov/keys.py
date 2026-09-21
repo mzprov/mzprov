@@ -1,15 +1,17 @@
-"""Ed25519 key generation, storage, and loading for TimSim provenance.
+"""Ed25519 key generation, storage, and loading for mzprov.
 
 The signing key is a *software* key. It lives at::
 
-    ~/.config/timsim/keys/signing_key.pem    (Ed25519 private, PKCS#8, no passphrase)
-    ~/.config/timsim/keys/verifying_key.pem  (Ed25519 public)
-    ~/.config/timsim/keys/key_id             (text file with the stable key id)
+    ~/.config/mzprov/keys/signing_key.pem    (Ed25519 private, PKCS#8, no passphrase)
+    ~/.config/mzprov/keys/verifying_key.pem  (Ed25519 public)
+    ~/.config/mzprov/keys/key_id             (text file with the stable key id)
 
-This is NOT a substitute for instrument-rooted attestation as proposed in
-SIGNING.md §7 Step 1. The Phase 0 prototype demonstrates the structural chain
-of custody — not hardware-equivalent guarantees. Anyone with read access to
-the signing key file can forge signatures from this key.
+A key already at the pre-0.1.2 location, ``~/.config/timsim/keys/``, is used
+in place when no key exists at the new one, so an existing signer keeps its
+identity. It is never copied or moved.
+
+A software key is NOT a substitute for instrument-rooted attestation. Anyone
+with read access to the signing key file can forge signatures from this key.
 
 Key id derivation (stable across processes / machines for the same key):
 
@@ -55,10 +57,23 @@ class KeyPair(NamedTuple):
     key_id: str
 
 
+def config_base() -> Path:
+    """The user's configuration directory, honoring ``XDG_CONFIG_HOME``."""
+    return Path(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"))
+
+
 def default_key_dir() -> Path:
-    """Return the default key directory: ``~/.config/timsim/keys/``."""
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return Path(base) / "timsim" / "keys"
+    """Return the default key directory: ``~/.config/mzprov/keys/``.
+
+    Falls back to the pre-0.1.2 ``~/.config/timsim/keys/`` when that holds a
+    signing key and the new location does not, so upgrading never silently
+    generates a second identity.
+    """
+    new = config_base() / "mzprov" / "keys"
+    legacy = config_base() / "timsim" / "keys"
+    if not (new / _PRIVATE_KEY_FILENAME).exists() and (legacy / _PRIVATE_KEY_FILENAME).exists():
+        return legacy
+    return new
 
 
 def _public_key_raw_bytes(public_key: Ed25519PublicKey) -> bytes:
@@ -93,7 +108,7 @@ def generate_keypair() -> KeyPair:
 
 
 def write_keypair(keypair: KeyPair, key_dir: PathLike | None = None) -> Path:
-    """Write a keypair to ``key_dir`` (default: ~/.config/timsim/keys/).
+    """Write a keypair to ``key_dir`` (default: ~/.config/mzprov/keys/).
 
     Writes signing_key.pem (PKCS#8, no passphrase), verifying_key.pem,
     and a ``key_id`` text file. Returns the directory path. Sets mode
@@ -216,9 +231,8 @@ def load_or_create_keypair(key_dir: PathLike | None = None) -> KeyPair:
     keypair = generate_keypair()
     write_keypair(keypair, key_dir)
     logger.warning(
-        "Generated new TimSim signing key at %s. Key id: %s. "
-        "This is a SOFTWARE key — see SIGNING.md §9 for the limitations of "
-        "the Phase 0 prototype.",
+        "Generated new mzprov signing key at %s. Key id: %s. "
+        "This is a software key: anyone who can read the file can sign as you.",
         sk_path,
         keypair.key_id,
     )

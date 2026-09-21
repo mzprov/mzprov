@@ -8,6 +8,22 @@ applies to the Python reference implementation. The specification version
 (`canonicalization_version` in the sidecar) evolve independently — see
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+## 0.1.2 — 2026-09-21
+
+### Changed
+
+- Python 3.8 to 3.13 are supported, down from 3.11. The suite needed no
+  changes; CI now tests every version. This lets tools pinned to older
+  Pythons, such as other simulators, offer mzprov signing.
+- New signing keys and trusted-keys registries go under
+  `~/.config/mzprov/` instead of `~/.config/timsim/`. A key or registry
+  that exists only at the old location is used in place and never copied,
+  so upgrading keeps the same signing identity. Key-id prefixes and type
+  tags are unchanged, as they are part of the signed v0 format.
+- Command output and help say `mzprov verify` / `mzprov keys` instead of
+  `timsim-verify` / `timsim-keys`, and no longer cite a SIGNING.md that is
+  not in this repository.
+
 ## 0.1.1 — 2026-09-21
 
 ### Fixed

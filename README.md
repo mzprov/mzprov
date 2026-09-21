@@ -139,8 +139,8 @@ pip install -e implementations/python
 ```
 
 This installs the unified `mzprov` console script and three flat
-aliases (`mzprov-sign`, `mzprov-verify`, `mzprov-keys`). Python ≥3.11
-required. The only runtime dependency is `cryptography` (Ed25519,
+aliases (`mzprov-sign`, `mzprov-verify`, `mzprov-keys`). Python 3.8 to
+3.13. The only runtime dependency is `cryptography` (Ed25519,
 BLAKE2b, SHA-256).
 
 ### Confirm your install with a known-good test vector
@@ -157,7 +157,7 @@ mzprov verify test-vectors/sidecar/valid/d-v0-minimal/   # from a clone
 Expected output:
 
 ```
-TimSim provenance verification
+mzprov provenance verification
   experiment:        d-v0-minimal
   producer:          TimSim mzprov-test-vectors/0.1.0
   signed at:         2026-04-10T07:07:22.467Z
@@ -203,12 +203,11 @@ mzprov sign /data/run.mzML \
 ```
 
 The first time you sign, `mzprov` auto-generates a software signing
-key at `~/.config/timsim/keys/signing_key.pem` and prints its key id.
-The `timsim/` path is intentionally preserved from the lift from
-`imspy_simulation.provenance`; a v1 rename to `~/.config/mzprov/`
-(with a one-time migration helper) is recorded as deferred work in
-[`docs/faq.md`](docs/faq.md). For the same reason, derived key ids
-are prefixed with `timsim-local-`.
+key at `~/.config/mzprov/keys/signing_key.pem` and prints its key id.
+A key already at the pre-0.1.2 location, `~/.config/timsim/keys/`, is
+used in place, so an existing signer keeps its identity. Derived key
+ids keep the `timsim-local-` prefix, which is part of the frozen v0
+format; see [`docs/faq.md`](docs/faq.md).
 
 ### Verify
 
