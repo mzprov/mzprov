@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mzprov"
-version = "0.1.1"
+version = "0.1.2"
 description = "Cryptographic provenance for mass spectrometry data: signing and verification of .d and mzML files"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.8,<3.14"
 authors = [
     { name = "David Teschner", email = "davidteschner@googlemail.com" },
 ]
@@ -27,6 +27,9 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

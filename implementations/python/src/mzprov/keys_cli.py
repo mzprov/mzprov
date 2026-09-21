@@ -1,4 +1,4 @@
-"""``timsim-keys`` command-line interface for the trust-key registry.
+"""``mzprov keys`` command-line interface for the trust-key registry.
 
 Subcommands:
 
@@ -57,10 +57,10 @@ EXIT_KEY_NOT_FOUND = 4
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="timsim-keys",
+        prog="mzprov keys",
         description=(
             "Manage the local TimSim signing key and the trusted-keys "
-            "registry used by 'timsim-verify --require-trusted'."
+            "registry used by 'mzprov verify --require-trusted'."
         ),
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -73,7 +73,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--key-dir",
         type=Path,
         default=None,
-        help="Override the key directory (default: ~/.config/timsim/keys/).",
+        help="Override the key directory (default: ~/.config/mzprov/keys/).",
     )
 
     p_export = sub.add_parser(
@@ -84,7 +84,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--key-dir",
         type=Path,
         default=None,
-        help="Override the key directory (default: ~/.config/timsim/keys/).",
+        help="Override the key directory (default: ~/.config/mzprov/keys/).",
     )
     p_export.add_argument(
         "--to",
@@ -121,7 +121,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--registry",
         type=Path,
         default=None,
-        help="Override the registry path (default: ~/.config/timsim/trusted_keys.json).",
+        help="Override the registry path (default: ~/.config/mzprov/trusted_keys.json).",
     )
 
     p_list = sub.add_parser(
@@ -132,7 +132,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--registry",
         type=Path,
         default=None,
-        help="Override the registry path (default: ~/.config/timsim/trusted_keys.json).",
+        help="Override the registry path (default: ~/.config/mzprov/trusted_keys.json).",
     )
 
     p_untrust = sub.add_parser(
@@ -144,7 +144,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--registry",
         type=Path,
         default=None,
-        help="Override the registry path (default: ~/.config/timsim/trusted_keys.json).",
+        help="Override the registry path (default: ~/.config/mzprov/trusted_keys.json).",
     )
 
     return parser
@@ -190,7 +190,7 @@ def _cmd_trust(args) -> int:
     source = Path(args.source)
     if not source.exists():
         print(
-            f"timsim-keys: trust source does not exist: {source}",
+            f"mzprov keys: trust source does not exist: {source}",
             file=sys.stderr,
         )
         return EXIT_KEY_ERROR
@@ -206,13 +206,13 @@ def _cmd_trust(args) -> int:
         candidates = sorted(source.glob("*.provenance.json"))
         if not candidates:
             print(
-                f"timsim-keys: no *.provenance.json found in directory {source}",
+                f"mzprov keys: no *.provenance.json found in directory {source}",
                 file=sys.stderr,
             )
             return EXIT_KEY_ERROR
         if len(candidates) > 1:
             print(
-                f"timsim-keys: directory {source} contains multiple sidecars; "
+                f"mzprov keys: directory {source} contains multiple sidecars; "
                 f"refusing to guess. Specify the exact sidecar JSON file:",
                 file=sys.stderr,
             )
@@ -222,32 +222,32 @@ def _cmd_trust(args) -> int:
         try:
             entry = trusted_key_from_sidecar_file(candidates[0], comment=args.comment)
         except (MalformedSidecar, KeyNotFoundError, ProvenanceError) as e:
-            print(f"timsim-keys: {e}", file=sys.stderr)
+            print(f"mzprov keys: {e}", file=sys.stderr)
             return EXIT_KEY_ERROR
     elif source.suffix == ".json" and ".provenance" in source.name:
         try:
             entry = trusted_key_from_sidecar_file(source, comment=args.comment)
         except (MalformedSidecar, KeyNotFoundError, ProvenanceError) as e:
-            print(f"timsim-keys: {e}", file=sys.stderr)
+            print(f"mzprov keys: {e}", file=sys.stderr)
             return EXIT_KEY_ERROR
     else:
         # Assume it's a PEM file.
         try:
             entry = trusted_key_from_pem_file(source, comment=args.comment)
         except (KeyNotFoundError, ProvenanceError) as e:
-            print(f"timsim-keys: {e}", file=sys.stderr)
+            print(f"mzprov keys: {e}", file=sys.stderr)
             return EXIT_KEY_ERROR
 
     try:
         registry = TrustedKeyRegistry.load(args.registry)
     except MalformedSidecar as e:
-        print(f"timsim-keys: registry error: {e}", file=sys.stderr)
+        print(f"mzprov keys: registry error: {e}", file=sys.stderr)
         return EXIT_REGISTRY_ERROR
 
     try:
         registry.add(entry)
     except ProvenanceError as e:
-        print(f"timsim-keys: refused to add: {e}", file=sys.stderr)
+        print(f"mzprov keys: refused to add: {e}", file=sys.stderr)
         return EXIT_KEY_ERROR
 
     registry.save()
@@ -262,12 +262,12 @@ def _cmd_list(args) -> int:
     try:
         registry = TrustedKeyRegistry.load(args.registry)
     except MalformedSidecar as e:
-        print(f"timsim-keys: registry error: {e}", file=sys.stderr)
+        print(f"mzprov keys: registry error: {e}", file=sys.stderr)
         return EXIT_REGISTRY_ERROR
 
     if len(registry) == 0:
         print(f"trusted-keys registry at {registry.path} is empty.")
-        print("Add a key with: timsim-keys trust SOURCE --comment '...'")
+        print("Add a key with: mzprov keys trust SOURCE --comment '...'")
         return EXIT_OK
 
     print(f"trusted-keys registry: {registry.path}")
@@ -285,12 +285,12 @@ def _cmd_untrust(args) -> int:
     try:
         registry = TrustedKeyRegistry.load(args.registry)
     except MalformedSidecar as e:
-        print(f"timsim-keys: registry error: {e}", file=sys.stderr)
+        print(f"mzprov keys: registry error: {e}", file=sys.stderr)
         return EXIT_REGISTRY_ERROR
 
     if not registry.remove(args.key_id):
         print(
-            f"timsim-keys: no key with id {args.key_id!r} in registry "
+            f"mzprov keys: no key with id {args.key_id!r} in registry "
             f"at {registry.path}",
             file=sys.stderr,
         )
@@ -322,13 +322,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return handler(args)
     except (KeyNotFoundError, MalformedKey) as e:
-        print(f"timsim-keys: key error: {e}", file=sys.stderr)
+        print(f"mzprov keys: key error: {e}", file=sys.stderr)
         return EXIT_KEY_ERROR
     except (MalformedSidecar, ProvenanceError) as e:
-        print(f"timsim-keys: registry/sidecar error: {e}", file=sys.stderr)
+        print(f"mzprov keys: registry/sidecar error: {e}", file=sys.stderr)
         return EXIT_REGISTRY_ERROR
     except Exception as e:  # pragma: no cover - safety net
-        print(f"timsim-keys: unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"mzprov keys: unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
         return EXIT_GENERIC
 
 

@@ -112,7 +112,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Override path to an Ed25519 private key (or a directory "
             "containing one). Defaults to the user's local signing key "
-            "at ~/.config/timsim/keys/signing_key.pem (auto-generated on "
+            "at ~/.config/mzprov/keys/signing_key.pem (auto-generated on "
             "first use)."
         ),
     )

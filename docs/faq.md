@@ -252,16 +252,17 @@ is unchanged.
 It is the legacy of the lift. mzprov was extracted from the
 `imspy_simulation.provenance` module in the rustims project, which
 used the prefix `timsim-local-` for key ids and stored config under
-`~/.config/timsim/`. The mzprov reference implementation preserves
-those paths in v0 so existing TimSim users do not lose their keys
-when they upgrade. A v1 rename to `mzprov-local-` and
-`~/.config/mzprov/` is candidate work; it requires a one-time
-migration helper to copy the old paths to the new locations on
-first run, with a fallback that honors the old locations
-indefinitely so existing sidecars stay verifiable.
+`~/.config/timsim/`.
 
-This is recorded in the migration plan as a deferred concern, not a
-shipping bug.
+Since 0.1.2 new keys and registries live under `~/.config/mzprov/`. A
+key or registry found only at the old `~/.config/timsim/` location is
+used where it is, never copied, so an upgrade does not create a second
+signing identity.
+
+The `timsim-local-` key-id prefix and the `timsim.*` type tags stay:
+they are inside signed payloads and derived key ids, so changing them
+would break every existing sidecar. Renaming them is v1 work and needs
+verifiers to accept both forms.
 
 ---
 

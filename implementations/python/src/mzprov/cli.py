@@ -1,4 +1,4 @@
-"""``timsim-verify`` command-line interface for the provenance subsystem.
+"""``mzprov verify`` command-line interface for the provenance subsystem.
 
 Exit codes:
     0 — verified
@@ -50,11 +50,10 @@ EXIT_KEY_NOT_TRUSTED = 7
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="timsim-verify",
+        prog="mzprov verify",
         description=(
-            "Verify the cryptographic provenance of a TimSim simulation output. "
-            "See SIGNING.md for the conceptual framework and the limitations of "
-            "the Phase 0 prototype."
+            "Verify the cryptographic provenance of a mass spectrometry file "
+            "(.d, mzML, .raw or .wiff) or of its sidecar."
         ),
     )
     parser.add_argument(
@@ -90,7 +89,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Path to the config TOML to verify against. Default: look for "
-            "{sidecar-basename}.config.toml next to the sidecar (TimSim copies "
+            "{sidecar-basename}.config.toml next to the sidecar (the signer copies "
             "this file there at sign time). If neither resolves, the config_hash "
             "check is reported as UNCHECKED."
         ),
@@ -113,8 +112,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Require the sidecar's signing key to be present in the "
-            "trusted-keys registry (~/.config/timsim/trusted_keys.json). "
-            "Use 'timsim-keys trust ...' to add a key to the registry. "
+            "trusted-keys registry (~/.config/mzprov/trusted_keys.json). "
+            "Use 'mzprov keys trust ...' to add a key to the registry. "
             "Without this flag, the embedded verifying key proves only "
             "integrity, not identity."
         ),
@@ -142,7 +141,7 @@ def _print_header(result: VerificationResult) -> None:
     producer_version = (
         getattr(p, "simulator_version", None) or getattr(p, "tool_version", "")
     )
-    print("TimSim provenance verification")
+    print("mzprov provenance verification")
     print(f"  experiment:        {p.experiment_name}")
     print(f"  producer:          {producer_name} {producer_version}")
     print(f"  signed at:         {p.timestamp_utc}")
@@ -310,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
                 error_message=str(e),
             ))
         else:
-            print(f"timsim-verify: artifact error: {e}", file=sys.stderr)
+            print(f"mzprov verify: artifact error: {e}", file=sys.stderr)
         return EXIT_SIDECAR_ERROR
     except (MalformedSidecar, MissingArtifact) as e:
         if json_mode:
@@ -321,12 +320,12 @@ def main(argv: list[str] | None = None) -> int:
                 error_message=str(e),
             ))
         else:
-            print(f"timsim-verify: discovery error: {e}", file=sys.stderr)
+            print(f"mzprov verify: discovery error: {e}", file=sys.stderr)
         return EXIT_SIDECAR_ERROR
 
     if discovery is None:
         msg = (
-            f"timsim-verify: no provenance sidecar found near {args.path}. "
+            f"mzprov verify: no provenance sidecar found near {args.path}. "
             f"This file or directory is unsigned."
         )
         if args.strict:
@@ -392,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
                 sidecar_path=sidecar_path,
             ))
         else:
-            print(f"timsim-verify: key error: {e}", file=sys.stderr)
+            print(f"mzprov verify: key error: {e}", file=sys.stderr)
         return EXIT_KEY_ERROR
     except SqliteNotQuiescent as e:
         if json_mode:
@@ -404,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
                 sidecar_path=sidecar_path,
             ))
         else:
-            print(f"timsim-verify: artifact error: {e}", file=sys.stderr)
+            print(f"mzprov verify: artifact error: {e}", file=sys.stderr)
         return EXIT_SIDECAR_ERROR
     except (MalformedSidecar, UnknownVersion, MissingArtifact) as e:
         if json_mode:
@@ -416,7 +415,7 @@ def main(argv: list[str] | None = None) -> int:
                 sidecar_path=sidecar_path,
             ))
         else:
-            print(f"timsim-verify: sidecar error: {e}", file=sys.stderr)
+            print(f"mzprov verify: sidecar error: {e}", file=sys.stderr)
         return EXIT_SIDECAR_ERROR
     except Exception as e:  # pragma: no cover - safety net
         if json_mode:
@@ -429,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
             ))
         else:
             print(
-                f"timsim-verify: unexpected error: {type(e).__name__}: {e}",
+                f"mzprov verify: unexpected error: {type(e).__name__}: {e}",
                 file=sys.stderr,
             )
         return EXIT_GENERIC
