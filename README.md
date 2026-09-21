@@ -44,11 +44,13 @@ when there is at least one implementation, test vectors, and approval — see
 | mzML canonicalization (spectrum content, all binary arrays) | v0 frozen |
 | Trust model (`--expected-key-id`, `--require-trusted`, `--public-key`) | v0 frozen |
 | Verifier exit codes (`0`–`7`) | v0 frozen |
-| Python reference implementation | shipping, 246 tests passing |
-| C# implementation | in development |
-| Cross-implementation conformance test vectors | v0 ships 16 vectors (2 valid, 11 invalid, 3 canonicalization fixtures) |
+| Python reference implementation | shipping on PyPI as `mzprov` |
+| Rust implementation | signer and verifier; not yet in the conformance CI |
+| C# implementation | in development, passes every conformance vector |
+| Cross-implementation conformance test vectors | 21 vectors, enforced in CI for Python and C# |
 | `.raw` canonicalization (opaque whole-file, sidecar-only) | v0 frozen, `spec/canonicalization-raw-v0.md` |
 | `.wiff` bundle canonicalization (member names folded into the digest) | shipping in the Python implementation; spec text pending |
+| Provenance chains (signed derivation lineage, `mzprov.chain`) | Python prototype, v1 draft |
 | Repository countersignature | out of scope for v0 |
 | Hardware-backed key protection | out of scope for v0 |
 
@@ -87,23 +89,14 @@ label-vs-signer consistency defense (which prevents an attacker from
 relabeling `payload.key_id` to claim a different identity) are
 specified in [`spec/trust-model.md`](spec/trust-model.md) §1 and §5.
 
-## Known issues
+## Embedded records survive sidecar removal
 
-Found while using mzprov to attest a fabricated-data study, where a genuine acquisition had to be
-signed by one party and tampered with by another:
-
-- `mzprov sign --tool-name` is ignored for a `.d`. The payload records `simulator_name` regardless,
-  so a genuine acquisition is attested as simulator output, which is backwards for the case the
-  format most needs to serve.
-- With the sidecar removed but an embedded record present inside the `.d`, `verify` reports a
-  ground-truth path error instead of reporting the embedded record it just read. The most useful
-  signal in the file is the one it buries.
-- The sidecar path is derived from `--experiment-name`, so a name containing a slash silently
-  creates a directory. Pass `--sidecar` explicitly to avoid it.
-
-A useful property surfaced at the same time: because a `.d` carries its attestation inside
-`analysis.tdf`, deleting the external sidecar does not strip provenance. The embedded record
-survives, and its absence in a genuine acquisition makes its presence meaningful.
+Because a `.d` carries its attestation inside `analysis.tdf`, deleting the
+external sidecar does not strip provenance. The embedded record survives, and
+its absence in a genuine acquisition makes its presence meaningful. When the
+embedded record references an artifact that is missing, `verify` still exits
+`3` as the specification requires, and the error names the embedded record:
+who signed it, for which experiment, with which key.
 
 ## What this repository does NOT claim
 
@@ -133,11 +126,14 @@ In particular, in v0:
 
 ### Install
 
-`mzprov` is not yet on PyPI. Install the Python reference implementation
-from a clone of this repository:
+```bash
+pip install mzprov
+```
+
+To work on the implementation itself, install from a clone instead:
 
 ```bash
-git clone <repo-url>             # URL will appear here once mzprov is pushed to GitHub
+git clone https://github.com/mzprov/mzprov.git
 cd mzprov
 pip install -e implementations/python
 ```
@@ -155,7 +151,7 @@ install is wired correctly is to verify the minimal valid `.d` vector
 — no need to bring your own data:
 
 ```bash
-mzprov verify test-vectors/sidecar/valid/d-v0-minimal/
+mzprov verify test-vectors/sidecar/valid/d-v0-minimal/   # from a clone
 ```
 
 Expected output:

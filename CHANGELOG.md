@@ -36,6 +36,20 @@ applies to the Python reference implementation. The specification version
 - Top-level `README.md`, `CONTRIBUTING.md`, and `LICENSE` umbrella document.
 - Stub `README.md` in each subdirectory describing its scope and status.
 
+### Fixed
+
+- `mzprov sign --tool-name` is now recorded for a `.d`. It was ignored and the
+  payload always said `TimSim`, so a genuine acquisition was attested as
+  simulator output. `sign_simulation_output` gains a `simulator_name`
+  argument, defaulting to `"TimSim"`.
+- When an embedded `.d` record references a missing ground-truth DB, `verify`
+  still exits `3` (spec/trust-model.md 3.3) but the error now names the
+  embedded record, its signer, experiment and key, instead of only a path.
+- An `--experiment-name` containing a path separator no longer creates a
+  directory for the sidecar. It is rejected unless `--sidecar` names the file.
+- The real-data tests read their inputs from `MZPROV_*` environment variables
+  instead of paths on one machine.
+
 ### Notes
 
 - The Python reference implementation is being lifted from
