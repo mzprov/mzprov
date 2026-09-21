@@ -45,9 +45,10 @@ CHAIN_SUFFIX = ".chain.json"
 MAX_DEPTH = 64
 
 # Exit-code taxonomy (codex precedence: malformed > bad-sig > integrity > broken-link >
-# missing-prov > trust).
+# missing-prov > trust). 0 and 3-7 mean what they mean for v0 sidecars; 8 and 9 exist only for
+# chains.
 EXIT_OK = 0
-EXIT_MALFORMED = 4
+EXIT_MALFORMED = 3
 EXIT_INTEGRITY = 5
 EXIT_BAD_SIG = 6
 EXIT_TRUST = 7

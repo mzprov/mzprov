@@ -5,6 +5,7 @@ Routes:
     mzprov sign   <args...>    -> mzprov.sign_cli:main
     mzprov verify <args...>    -> mzprov.cli:main
     mzprov keys   <args...>    -> mzprov.keys_cli:main
+    mzprov chain  <args...>    -> mzprov.chain_cli:main
 
 The unified CLI is a thin dispatcher: each subcommand is implemented as a
 standalone module with its own ``main()`` function, and is also available
@@ -28,6 +29,7 @@ subcommands:
   sign         sign a .d directory or an mzML file with an Ed25519 attestation
   verify       verify a sidecar (.d directory, mzML file, or sidecar JSON)
   keys         manage signing keys and the trusted-keys registry
+  chain        sign and verify provenance chains (v1 prototype)
 
 global flags:
   -h, --help     show this message
@@ -73,6 +75,11 @@ def main(argv: list[str] | None = None) -> int:
 
         sys.argv = ["mzprov keys", *rest]
         return _keys_main() or 0
+
+    if sub == "chain":
+        from mzprov.chain_cli import main as _chain_main
+
+        return _chain_main(rest)
 
     if sub == "sign":
         from mzprov.sign_cli import main as _sign_main

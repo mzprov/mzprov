@@ -76,12 +76,28 @@ assert result.overall_ok
 
 ### Provenance chains (prototype)
 
-`mzprov.chain` signs derivations: each output records the artifacts it was
-made from, and `verify_chain` walks the lineage back to a trusted root, for
-example raw acquisition to mzML to search result. Chains are Python-only and
-a v1 draft; they are not yet part of the frozen v0 specification. A verified
-chain shows the provenance claims are intact, not that each transform was
-correct.
+A chain signs derivations: each output records the artifacts it was made
+from, and verification walks the lineage back to a trusted root.
+
+```bash
+# The root: a raw acquisition, signed by the lab.
+mzprov chain sign run.raw --experiment-name acq001 --tool-name timsTOF
+
+# A derived file names its inputs by role and chain sidecar.
+mzprov chain sign run.mzML --experiment-name acq001 --tool-name msconvert \
+    --input source_raw=run.raw.chain.json
+
+# Walk run.mzML back to run.raw; the root's key must be trusted
+# (mzprov keys trust <signer's public key PEM> --comment ...).
+mzprov chain verify run.mzML
+```
+
+`chain verify` exits `0` verified, `3` malformed sidecar or graph, `5` an
+artifact changed, `6` a bad signature, `7` an untrusted root, `8` an input
+that does not match the parent it points to, and `9` an input with no
+provenance. Chains are Python-only and a v1 draft, not yet part of the frozen
+v0 specification. A verified chain shows the provenance claims are intact,
+not that each transform was correct.
 
 ## Links
 

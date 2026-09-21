@@ -12,6 +12,8 @@ applies to the Python reference implementation. The specification version
 
 ### Added
 
+- `mzprov chain sign` and `mzprov chain verify`: the command line for
+  provenance chains, which were available only as Python functions.
 - Cross-implementation conformance CI (`.github/workflows/conformance.yml`):
   runs the Python unit suite plus a language-agnostic black-box harness
   (`test-vectors/_harness/run_conformance.py`) over `test-vectors/` on every
@@ -38,6 +40,9 @@ applies to the Python reference implementation. The specification version
 
 ### Fixed
 
+- Chain verification reports a malformed sidecar or graph as `3`, as v0
+  does, instead of `4`, which v0 reserves for an unsigned file. Chain-only
+  outcomes keep `8` (broken link) and `9` (missing provenance).
 - `mzprov sign --tool-name` is now recorded for a `.d`. It was ignored and the
   payload always said `TimSim`, so a genuine acquisition was attested as
   simulator output. `sign_simulation_output` gains a `simulator_name`

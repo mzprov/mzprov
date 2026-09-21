@@ -50,7 +50,7 @@ when there is at least one implementation, test vectors, and approval — see
 | Cross-implementation conformance test vectors | 21 vectors, enforced in CI for Python and C# |
 | `.raw` canonicalization (opaque whole-file, sidecar-only) | v0 frozen, `spec/canonicalization-raw-v0.md` |
 | `.wiff` bundle canonicalization (member names folded into the digest) | shipping in the Python implementation; spec text pending |
-| Provenance chains (signed derivation lineage, `mzprov.chain`) | Python prototype, v1 draft |
+| Provenance chains (signed derivation lineage, `mzprov chain sign` / `verify`) | Python prototype, v1 draft |
 | Repository countersignature | out of scope for v0 |
 | Hardware-backed key protection | out of scope for v0 |
 
