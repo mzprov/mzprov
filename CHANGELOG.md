@@ -8,6 +8,32 @@ applies to the Python reference implementation. The specification version
 (`canonicalization_version` in the sidecar) evolve independently — see
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+## Unreleased
+
+### Added
+
+- `mzprov-mcp`, a Model Context Protocol server (`pip install 'mzprov[mcp]'`,
+  Python 3.10+). Tools: `verify` (same JSON as `mzprov verify --json`),
+  `find_provenance`, `show_signing_key`, `list_trusted_keys`, and `sign` behind
+  `--allow-sign`. Trust-registry changes are deliberately not exposed.
+
+### Fixed
+
+- Reading a `.d` could create an empty file when a directory in its path
+  contained `#` or `?`. SQLite read the raw path as a URI, so the path ended
+  early and the read-only option was dropped. Paths are now percent-encoded,
+  which affects `verify`, `sign` and the embedded-record lookup. Hashes are
+  unchanged.
+- The check for an unfinished SQLite write (a `-wal` or `-journal` file next
+  to the database) missed a symlinked `analysis.tdf`, whose `-wal` sits next
+  to the real file. It now checks both places, so a stale image of a
+  database still being written is no longer hashed.
+- `mzprov sign --sidecar` accepted any name for a `.d` or mzML sidecar, but
+  verifiers recognize a sidecar only by a name ending in `.provenance.json`,
+  so `attestation.json` was signed and then verified as UNSIGNED. Both the
+  Python and C# signers now refuse such names before writing, as they already
+  did for `.raw` and `.wiff`.
+
 ## 0.1.2 — 2026-09-21
 
 ### Changed

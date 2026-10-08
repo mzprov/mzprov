@@ -260,6 +260,28 @@ mzprov keys untrust timsim-local-yourkey
 The `--comment` flag is required on `mzprov keys trust` so that trust
 grants are deliberate and auditable rather than absent-minded.
 
+### MCP server
+
+`mzprov-mcp` serves mzprov to Model Context Protocol clients (Claude Code,
+Claude Desktop and other agent hosts) over stdio. It needs Python 3.10+.
+
+```bash
+pip install 'mzprov[mcp]'
+claude mcp add mzprov -- mzprov-mcp      # register with Claude Code
+```
+
+| Tool | What it does |
+|---|---|
+| `verify` | Same check and same JSON as `mzprov verify --json`, with `strict`, `expected_key_id` and `require_trusted`. |
+| `find_provenance` | Finds the attestation and returns its payload *without* verifying it. Fast, because it hashes nothing. |
+| `show_signing_key` | Local key id and public PEM. Never creates a key. |
+| `list_trusted_keys` | Entries of the trusted-keys registry. |
+| `sign` | Only with `mzprov-mcp --allow-sign`. Signs a `.d`, mzML or `.raw` with your local key. |
+
+Signing is opt-in because a signature asserts your identity. Trusting and
+untrusting keys is not exposed: those changes stay with a person at
+`mzprov keys trust`, which requires a written reason.
+
 ### TimSim integration
 
 For TimSim users: `imspy_simulation.provenance` continues to work

@@ -51,6 +51,10 @@ xml-cross-validate = [
     # Used by tests/test_mzml.py via pytest.importorskip; never imported at runtime.
     "pyteomics>=4.6",
 ]
+mcp = [
+    # For the mzprov-mcp server (mzprov.mcp_server). The MCP SDK needs 3.10+.
+    "mcp>=2.0; python_version >= '3.10'",
+]
 
 [project.urls]
 Homepage = "https://github.com/mzprov/mzprov"
@@ -64,6 +68,7 @@ mzprov = "mzprov.main:main"
 mzprov-sign = "mzprov.sign_cli:main"
 mzprov-verify = "mzprov.cli:main"
 mzprov-keys = "mzprov.keys_cli:main"
+mzprov-mcp = "mzprov.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mzprov"]
