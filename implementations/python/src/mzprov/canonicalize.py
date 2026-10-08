@@ -215,6 +215,16 @@ def _iter_canonical_sql_records(conn: sqlite3.Connection) -> Iterator[bytes]:
             yield b"".join(parts)
 
 
+def _readonly_sqlite_uri(db_path: Path) -> str:
+    """Return a read-only, immutable SQLite URI for ``db_path``.
+
+    The path is percent-encoded via ``Path.as_uri``. Interpolating it raw
+    would let a ``#`` or ``?`` in a directory name end the path early: SQLite
+    then drops ``mode=ro`` with the rest and may create a new, empty file.
+    """
+    return Path(db_path).resolve().as_uri() + "?mode=ro&immutable=1"
+
+
 def _assert_sqlite_quiescent(db_path: Path) -> None:
     """Raise SqliteNotQuiescent if any SQLite sidecar exists next to ``db_path``.
 
@@ -230,10 +240,13 @@ def _assert_sqlite_quiescent(db_path: Path) -> None:
     """
     db_path = Path(db_path)
     found = []
-    for suffix in _SQLITE_SIDECAR_SUFFIXES:
-        candidate = db_path.with_name(db_path.name + suffix)
-        if candidate.exists():
-            found.append(candidate)
+    # A symlinked database keeps its -wal/-journal next to the real file,
+    # which is the one _readonly_sqlite_uri opens. Check both locations.
+    for base in dict.fromkeys((db_path, db_path.resolve())):
+        for suffix in _SQLITE_SIDECAR_SUFFIXES:
+            candidate = base.with_name(base.name + suffix)
+            if candidate.exists():
+                found.append(candidate)
     if found:
         raise SqliteNotQuiescent(db_path, found)
 
@@ -264,8 +277,7 @@ def canonicalize_sqlite(db_path: PathLike) -> bytes:
     # Read-only URI mode so we never accidentally modify the database we're
     # hashing. immutable=1 also tells SQLite to skip locking, which is faster
     # and avoids creating -journal files next to the .d.
-    uri = f"file:{db_path}?mode=ro&immutable=1"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = sqlite3.connect(_readonly_sqlite_uri(db_path), uri=True)
     try:
         h = hashlib.sha256()
         for chunk in _iter_canonical_sql_records(conn):

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,7 @@ from mzprov.errors import (
     SqliteNotQuiescent,
 )
 from mzprov.sign import sign_simulation_output
+from mzprov._fixtures import make_minimal_d
 from mzprov.verify import (
     find_provenance_for,
     verify_embedded_d,
@@ -46,6 +48,45 @@ from mzprov.verify import (
 # ---------------------------------------------------------------------------
 # embed_d module — round-trip and exclusion correctness
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("parent", [
+    "new-file#",
+    pytest.param("new-file?x=1", marks=pytest.mark.skipif(
+        sys.platform == "win32", reason="'?' is not allowed in Windows names")),
+])
+def test_reads_never_create_files_for_uri_special_paths(tmp_path, parent):
+    """A ``#`` or ``?`` in the path must not end the read-only SQLite URI
+    early, which would drop ``mode=ro`` and create ``tmp_path/new-file``."""
+    (tmp_path / parent).mkdir()
+    (tmp_path / "plain").mkdir()
+    d_path = make_minimal_d(tmp_path / parent, name="x")
+    reference = make_minimal_d(tmp_path / "plain", name="x")
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    assert read_embedded_provenance(d_path) is None
+    assert has_embedded_provenance(d_path) is False
+    assert canonicalize_d(d_path) == canonicalize_d(reference)
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges")
+def test_quiescence_checks_symlink_target(tmp_path, minimal_d):
+    """A -wal next to the real file behind a symlinked analysis.tdf must be
+    caught, since the real file is what gets opened."""
+    real = tmp_path / "elsewhere" / "live.db"
+    real.parent.mkdir()
+    tdf = minimal_d / "analysis.tdf"
+    tdf.rename(real)
+    tdf.symlink_to(real)
+    assert canonicalize_d(minimal_d)  # quiescent: hashes normally
+
+    real.with_name("live.db-wal").write_bytes(b"")
+    with pytest.raises(SqliteNotQuiescent):
+        canonicalize_d(minimal_d)
+    with pytest.raises(SqliteNotQuiescent):
+        read_embedded_provenance(minimal_d)
 
 
 def test_embed_d_round_trip(minimal_d):

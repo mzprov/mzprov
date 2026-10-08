@@ -8,6 +8,20 @@ applies to the Python reference implementation. The specification version
 (`canonicalization_version` in the sidecar) evolve independently — see
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+## Unreleased
+
+### Fixed
+
+- Reading a `.d` could create an empty file when a directory in its path
+  contained `#` or `?`. SQLite read the raw path as a URI, so the path ended
+  early and the read-only option was dropped. Paths are now percent-encoded,
+  which affects `verify`, `sign` and the embedded-record lookup. Hashes are
+  unchanged.
+- The check for an unfinished SQLite write (a `-wal` or `-journal` file next
+  to the database) missed a symlinked `analysis.tdf`, whose `-wal` sits next
+  to the real file. It now checks both places, so a stale image of a
+  database still being written is no longer hashed.
+
 ## 0.1.2 — 2026-09-21
 
 ### Changed

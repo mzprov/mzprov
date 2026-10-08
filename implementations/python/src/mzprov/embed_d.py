@@ -21,6 +21,7 @@ from typing import Union
 from mzprov.canonicalize import (
     EMBEDDED_PROVENANCE_TABLE,
     _assert_sqlite_quiescent,
+    _readonly_sqlite_uri,
 )
 from mzprov.errors import (
     MalformedSidecar,
@@ -151,8 +152,7 @@ def read_embedded_provenance(d_path: PathLike) -> bytes | None:
 
     _assert_sqlite_quiescent(tdf)
 
-    uri = f"file:{tdf}?mode=ro&immutable=1"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = sqlite3.connect(_readonly_sqlite_uri(tdf), uri=True)
     try:
         cur = conn.execute(
             "SELECT name FROM sqlite_master "
@@ -195,8 +195,7 @@ def has_embedded_provenance(d_path: PathLike) -> bool:
     tdf = _tdf_path(d_path)
     _assert_sqlite_quiescent(tdf)
 
-    uri = f"file:{tdf}?mode=ro&immutable=1"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = sqlite3.connect(_readonly_sqlite_uri(tdf), uri=True)
     try:
         cur = conn.execute(
             "SELECT name FROM sqlite_master "
