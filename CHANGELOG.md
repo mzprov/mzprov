@@ -10,6 +10,13 @@ applies to the Python reference implementation. The specification version
 
 ## Unreleased
 
+### Added
+
+- `mzprov-mcp`, a Model Context Protocol server (`pip install 'mzprov[mcp]'`,
+  Python 3.10+). Tools: `verify` (same JSON as `mzprov verify --json`),
+  `find_provenance`, `show_signing_key`, `list_trusted_keys`, and `sign` behind
+  `--allow-sign`. Trust-registry changes are deliberately not exposed.
+
 ### Fixed
 
 - Reading a `.d` could create an empty file when a directory in its path

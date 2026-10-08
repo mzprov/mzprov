@@ -40,7 +40,7 @@ jobs:
 
       - name: Unit tests
         run: |
-          pip install -e ".[test]"
+          pip install -e ".[test,mcp]"
           pytest
 
       - name: Build
