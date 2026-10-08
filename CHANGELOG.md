@@ -21,6 +21,11 @@ applies to the Python reference implementation. The specification version
   to the database) missed a symlinked `analysis.tdf`, whose `-wal` sits next
   to the real file. It now checks both places, so a stale image of a
   database still being written is no longer hashed.
+- `mzprov sign --sidecar` accepted any name for a `.d` or mzML sidecar, but
+  verifiers recognize a sidecar only by a name ending in `.provenance.json`,
+  so `attestation.json` was signed and then verified as UNSIGNED. Both the
+  Python and C# signers now refuse such names before writing, as they already
+  did for `.raw` and `.wiff`.
 
 ## 0.1.2 — 2026-09-21
 

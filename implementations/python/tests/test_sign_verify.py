@@ -662,6 +662,44 @@ def test_sign_cli_d_rejects_experiment_name_with_separator(tmp_path):
     assert sidecar.is_file()
 
 
+@pytest.mark.parametrize("kind", ["d", "mzml"])
+def test_sign_cli_rejects_undiscoverable_sidecar_name(tmp_path, capsys, kind):
+    """Verifiers recognize a sidecar only by its .provenance name, so a
+    sidecar called attestation.json used to be signed and then reported
+    UNSIGNED. Refuse it before writing anything."""
+    from mzprov._fixtures import make_minimal_d, make_minimal_mzml
+    from mzprov.cli import main as verify_main
+    from mzprov.sign_cli import EXIT_GENERIC, EXIT_OK
+    from mzprov.sign_cli import main as sign_main
+
+    config_path = tmp_path / "run.toml"
+    config_path.write_bytes(b"[x]\n")
+    if kind == "d":
+        artifact = make_minimal_d(tmp_path, name="run")
+    else:
+        artifact = make_minimal_mzml(tmp_path, name="run")
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+    base = [
+        str(artifact),
+        "--experiment-name", "run",
+        "--config", str(config_path),
+        "--key", str(key_dir),
+    ]
+
+    bad = tmp_path / "attestation.json"
+    assert sign_main(base + ["--sidecar", str(bad)]) == EXIT_GENERIC
+    assert ".provenance.json" in capsys.readouterr().err
+    assert not bad.exists()
+    assert not (tmp_path / "attestation.config.toml").exists()
+
+    good = tmp_path / "attestation.provenance.json"
+    assert sign_main(base + ["--sidecar", str(good)]) == EXIT_OK
+    capsys.readouterr()
+    assert verify_main([str(good), "--json"]) == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["status"] == "verified"
+
+
 def test_sign_cli_mzml_signs_and_verifies(tmp_path):
     """mzprov sign on an mzML file writes a sidecar that verifies."""
     from mzprov import verify_sidecar

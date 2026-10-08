@@ -103,6 +103,20 @@ def _resolve_keypair(private_key_path: PathLike | None) -> KeyPair:
     )
 
 
+def _require_discoverable_sidecar_name(sidecar_path: Path) -> None:
+    """Refuse a sidecar name that verifiers will not recognize.
+
+    Discovery accepts a JSON file as a sidecar only by its
+    ``.provenance`` name (spec/trust-model.md §3.1), so any other name
+    would be reported UNSIGNED by every verifier.
+    """
+    if not sidecar_path.name.endswith(".provenance.json"):
+        raise ValueError(
+            f"sidecar_path must end with '.provenance.json' (got "
+            f"{sidecar_path.name!r}); verifiers do not recognize other names"
+        )
+
+
 def sign_simulation_output(
     *,
     d_path: PathLike,
@@ -204,6 +218,7 @@ def sign_simulation_output(
             sidecar_path = d_path.parent / f"{experiment_name}.provenance.json"
         else:
             sidecar_path = Path(sidecar_path)
+            _require_discoverable_sidecar_name(sidecar_path)
         config_copy_path = sidecar_config_path(sidecar_path)
 
     # 1. Compute component hashes from disk.
@@ -365,6 +380,7 @@ def sign_mzml_output(
             sidecar_path = mzml_path.with_name(mzml_path.stem + ".provenance.json")
         else:
             sidecar_path = Path(sidecar_path)
+            _require_discoverable_sidecar_name(sidecar_path)
         config_copy_target = sidecar_config_path(sidecar_path)
 
     # 1. Compute component hashes from disk.

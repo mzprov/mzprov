@@ -29,6 +29,7 @@ internal static class Sign
         }
         else
         {
+            if (sidecarPathOverride != null) RequireDiscoverableSidecarName(sidecarPathOverride);
             sidecarPath = sidecarPathOverride
                 ?? Path.Combine(Paths.DirName(dPath), experimentName + ".provenance.json");
             configCopyPath = Paths.SidecarConfigPath(sidecarPath);
@@ -90,6 +91,7 @@ internal static class Sign
         }
         else
         {
+            if (sidecarPathOverride != null) RequireDiscoverableSidecarName(sidecarPathOverride);
             sidecarPath = sidecarPathOverride
                 ?? Path.Combine(Paths.DirName(mzmlPath),
                     Path.GetFileNameWithoutExtension(Paths.BaseName(mzmlPath)) + ".provenance.json");
@@ -194,6 +196,19 @@ internal static class Sign
         byte[] signature = Keys.Sign(key.Private, signed);
         return Sidecar.WriteSidecarJson(type, payload,
             Keys.SignatureToB64(signature), Keys.PublicKeyToB64(key.PublicRaw));
+    }
+
+    // Verifiers accept a JSON file as a sidecar only by its ".provenance" name
+    // (spec/trust-model.md §3.1), so any other name would verify as UNSIGNED.
+    // Mirrors mzprov.sign._require_discoverable_sidecar_name.
+    private static void RequireDiscoverableSidecarName(string sidecarPath)
+    {
+        string name = Paths.BaseName(sidecarPath);
+        if (!name.EndsWith(".provenance.json", StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"--sidecar must end with '.provenance.json' (got '{name}'); verifiers do not recognize other names");
+        }
     }
 
     private static byte[] ReadOptionalConfig(string? configPath)
